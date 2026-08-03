@@ -8,6 +8,7 @@ export type VideoStatus =
 
 export interface Video {
   id: string
+  userId: string
   url: string
   title: string | null
   thumbnailUrl: string | null

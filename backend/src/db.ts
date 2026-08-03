@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readFile, rm } from 'node:fs/promises'
+import { mkdir, writeFile, readFile, rename } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Video } from './types.js'
@@ -7,6 +7,11 @@ const DB_PATH = process.env.DB_PATH || './data/videos.json'
 
 let memoryDb: Video[] = []
 let initialized = false
+
+// Serializes all writes so concurrent create/update/delete calls never race
+// on the same on-disk file (previous implementation fired unserialized
+// writeFile() calls per progress tick, risking a truncated/corrupt DB).
+let writeChain: Promise<void> = Promise.resolve()
 
 async function ensureDir() {
   const dir = join(DB_PATH, '..')
@@ -27,16 +32,33 @@ async function load(): Promise<Video[]> {
   return memoryDb
 }
 
-async function save(videos: Video[]) {
-  memoryDb = videos
+async function persist(videos: Video[]) {
   await ensureDir()
-  await writeFile(DB_PATH, JSON.stringify(videos, null, 2))
+  // Atomic write: write to a temp file then rename, so a crash mid-write
+  // never leaves videos.json truncated/corrupted.
+  const tmpPath = `${DB_PATH}.tmp-${process.pid}-${Date.now()}`
+  await writeFile(tmpPath, JSON.stringify(videos, null, 2))
+  await rename(tmpPath, DB_PATH)
+}
+
+async function save(videos: Video[]): Promise<void> {
+  memoryDb = videos
+  const chained = writeChain.then(() => persist(videos))
+  // Keep the chain alive even if this write fails, so later writes still run.
+  writeChain = chained.catch((err) => {
+    console.error('Failed to persist videos DB:', err)
+  })
+  await chained
 }
 
 export const db = {
   async list(): Promise<Video[]> {
     const videos = await load()
-    return videos.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    return [...videos].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+  },
+  async listByUser(userId: string): Promise<Video[]> {
+    const videos = await this.list()
+    return videos.filter((v) => v.userId === userId)
   },
   async get(id: string): Promise<Video | undefined> {
     const videos = await load()

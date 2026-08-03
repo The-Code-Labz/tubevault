@@ -10,6 +10,7 @@ export type StorageBackend = 'supabase' | 'r2'
 
 export interface Video {
   id: string
+  userId: string
   url: string
   title: string | null
   thumbnailUrl: string | null

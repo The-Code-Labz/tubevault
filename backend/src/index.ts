@@ -2,13 +2,26 @@ import express from 'express'
 import cors from 'cors'
 import { config, validateConfig } from './config.js'
 import { db } from './db.js'
-import { queueDownload, deleteVideo, getVideoPublicUrl, cancelDownload, getYtDlpVersion, updateYtDlp } from './downloader.js'
+import {
+  queueDownload,
+  deleteVideo,
+  getVideoPublicUrl,
+  cancelDownload,
+  getYtDlpVersion,
+  updateYtDlp,
+  shutdownActiveJobs,
+} from './downloader.js'
 import { z } from 'zod'
+import { requireAuth, type AuthedRequest } from './auth.js'
+import { assertSafeDownloadUrl } from './url-safety.js'
 import type { StorageBackend } from './types.js'
 
 const app = express()
-app.use(cors())
-app.use(express.json())
+
+// Same-origin only by default. Set ALLOWED_ORIGIN (comma-separated) when the
+// frontend is served from a different origin than this API.
+app.use(cors(config.allowedOrigins.length ? { origin: config.allowedOrigins } : { origin: false }))
+app.use(express.json({ limit: '100kb' }))
 
 const downloadSchema = z.object({
   url: z.string().url(),
@@ -34,20 +47,31 @@ app.get('/api/health', async (_req, res) => {
   }
 })
 
-app.get('/api/videos', async (_req, res) => {
+// Every /api/videos* route requires a valid Supabase session.
+app.use('/api/videos', requireAuth)
+
+app.get('/api/videos', async (req: AuthedRequest, res) => {
   try {
-    const videos = await db.list()
+    const videos = await db.listByUser(req.userId!)
     res.json(videos)
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   }
 })
 
-app.post('/api/videos', async (req, res) => {
+app.post('/api/videos', async (req: AuthedRequest, res) => {
   try {
     const parsed = downloadSchema.parse(req.body)
+
+    try {
+      await assertSafeDownloadUrl(parsed.url)
+    } catch (safetyErr: any) {
+      res.status(400).json({ error: safetyErr.message })
+      return
+    }
+
     const backend = parsed.backend || config.storageBackend
-    const video = await queueDownload(parsed.url, backend as StorageBackend)
+    const video = await queueDownload(parsed.url, backend as StorageBackend, req.userId!)
     res.status(202).json(video)
   } catch (err: any) {
     if (err instanceof z.ZodError) {
@@ -58,10 +82,10 @@ app.post('/api/videos', async (req, res) => {
   }
 })
 
-app.get('/api/videos/:id', async (req, res) => {
+app.get('/api/videos/:id', async (req: AuthedRequest, res) => {
   try {
     const video = await db.get(req.params.id)
-    if (!video) {
+    if (!video || video.userId !== req.userId) {
       res.status(404).json({ error: 'Video not found' })
       return
     }
@@ -71,9 +95,9 @@ app.get('/api/videos/:id', async (req, res) => {
   }
 })
 
-app.get('/api/videos/:id/stream', async (req, res) => {
+app.get('/api/videos/:id/stream', async (req: AuthedRequest, res) => {
   try {
-    const url = await getVideoPublicUrl(req.params.id)
+    const url = await getVideoPublicUrl(req.params.id, req.userId!)
     if (!url) {
       res.status(404).json({ error: 'Video not ready or not found' })
       return
@@ -84,9 +108,9 @@ app.get('/api/videos/:id/stream', async (req, res) => {
   }
 })
 
-app.delete('/api/videos/:id', async (req, res) => {
+app.delete('/api/videos/:id', async (req: AuthedRequest, res) => {
   try {
-    const deleted = await deleteVideo(req.params.id)
+    const deleted = await deleteVideo(req.params.id, req.userId!)
     if (!deleted) {
       res.status(404).json({ error: 'Video not found' })
       return
@@ -97,9 +121,9 @@ app.delete('/api/videos/:id', async (req, res) => {
   }
 })
 
-app.post('/api/videos/:id/cancel', async (req, res) => {
+app.post('/api/videos/:id/cancel', async (req: AuthedRequest, res) => {
   try {
-    const cancelled = await cancelDownload(req.params.id)
+    const cancelled = await cancelDownload(req.params.id, req.userId!)
     if (!cancelled) {
       res.status(404).json({ error: 'No active download found' })
       return
@@ -126,10 +150,24 @@ async function main() {
     console.warn(`yt-dlp update check failed: ${err.message}`)
   }
 
-  app.listen(config.port, () => {
+  const server = app.listen(config.port, () => {
     console.log(`TubeVault API running on http://localhost:${config.port}`)
     console.log(`Storage backend: ${config.storageBackend}`)
   })
+
+  let shuttingDown = false
+  function shutdown(signal: string) {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log(`Received ${signal}, shutting down gracefully...`)
+    shutdownActiveJobs()
+    server.close(() => process.exit(0))
+    // Force-exit if something keeps the event loop alive.
+    setTimeout(() => process.exit(1), 10000).unref()
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
 }
 
 main().catch((err) => {

@@ -21,6 +21,13 @@ RUN npm install
 
 COPY . .
 
+# Vite inlines these into the client bundle at build time — the anon key is
+# safe to expose (it's the public client key, not SUPABASE_SERVICE_KEY).
+ARG VITE_SUPABASE_URL
+ARG VITE_SUPABASE_ANON_KEY
+ENV VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+ENV VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
+
 RUN npm run build
 RUN cp -r frontend/dist backend/public
 

@@ -24,7 +24,7 @@ export const config = {
   // Storage selection: 'supabase' | 'r2'
   storageBackend: (process.env.STORAGE_BACKEND || 'supabase') as 'supabase' | 'r2',
 
-  // Supabase Storage
+  // Supabase (used for both auth verification and, optionally, storage)
   supabaseUrl: process.env.SUPABASE_URL || '',
   supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY || '',
   supabaseBucket: process.env.SUPABASE_BUCKET || 'videos',
@@ -36,9 +36,15 @@ export const config = {
   r2Bucket: process.env.R2_BUCKET || 'videos',
   r2PublicUrl: process.env.R2_PUBLIC_URL || '',
 
+  // CORS: comma-separated list of allowed origins. Empty = same-origin only (no CORS headers sent).
+  allowedOrigins: (process.env.ALLOWED_ORIGIN || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+
   // yt-dlp / download settings
   downloadDir: process.env.DOWNLOAD_DIR || '/tmp/tubevault-downloads',
-  maxConcurrentDownloads: parseInt(process.env.MAX_CONCURRENT_DOWNLOADS || '2', 10),
+  maxConcurrentDownloads: Math.max(1, parseInt(process.env.MAX_CONCURRENT_DOWNLOADS || '2', 10)),
   maxFileSizeBytes: parseInt(process.env.MAX_FILE_SIZE_BYTES || `${5 * 1024 * 1024 * 1024}`, 10),
 
   ytDlpPath: process.env.YTDLP_PATH || 'yt-dlp',
@@ -52,11 +58,10 @@ export const config = {
 }
 
 export function validateConfig() {
-  if (config.storageBackend === 'supabase') {
-    if (!config.supabaseUrl || !config.supabaseServiceKey) {
-      throw new Error('STORAGE_BACKEND=supabase requires SUPABASE_URL and SUPABASE_SERVICE_KEY')
-    }
-  }
+  // Supabase is now mandatory: it backs authentication regardless of storage backend.
+  requireEnv('SUPABASE_URL')
+  requireEnv('SUPABASE_SERVICE_KEY')
+
   if (config.storageBackend === 'r2') {
     if (!config.r2Endpoint || !config.r2AccessKeyId || !config.r2SecretAccessKey) {
       throw new Error('STORAGE_BACKEND=r2 requires R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY')

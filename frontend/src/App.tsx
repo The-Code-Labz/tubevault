@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Film, Trash2 } from 'lucide-react'
+import { Film, LogOut, Trash2 } from 'lucide-react'
 import { api } from './lib/api.ts'
 import { DownloadForm } from './components/DownloadForm.tsx'
 import { VideoCard } from './components/VideoCard.tsx'
 import { VideoPlayer } from './components/VideoPlayer.tsx'
+import { AuthForm } from './components/AuthForm.tsx'
+import { useAuth } from './lib/auth-context.tsx'
 import type { DownloadRequest, Video } from './types.ts'
 
 export default function App() {
+  const { session, loading: authLoading, signOut } = useAuth()
   const [videos, setVideos] = useState<Video[]>([])
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -27,10 +30,12 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!session) return
     loadVideos()
     const interval = setInterval(loadVideos, 3000)
     return () => clearInterval(interval)
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session])
 
   async function handleDownload(req: DownloadRequest) {
     setSubmitting(true)
@@ -54,6 +59,18 @@ export default function App() {
     }
   }
 
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-zinc-500">
+        Loading...
+      </div>
+    )
+  }
+
+  if (!session) {
+    return <AuthForm />
+  }
+
   const filtered = videos.filter((v) => {
     if (filter === 'complete') return v.status === 'complete'
     if (filter === 'active') return ['queued', 'downloading', 'processing', 'uploading'].includes(v.status)
@@ -69,7 +86,14 @@ export default function App() {
             <Film size={20} className="text-white" />
           </div>
           <h1 className="text-xl font-bold">TubeVault</h1>
-          <span className="ml-auto text-sm text-zinc-500">Universal Video Downloader</span>
+          <span className="ml-4 text-sm text-zinc-500">{session.user.email}</span>
+          <button
+            onClick={() => signOut()}
+            className="ml-auto flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
+          >
+            <LogOut size={16} />
+            Sign out
+          </button>
         </div>
       </header>
 

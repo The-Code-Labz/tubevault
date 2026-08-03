@@ -10,6 +10,31 @@ import type { StorageBackend, Video } from './types.js'
 
 const activeJobs = new Map<string, { controller: AbortController; child?: ReturnType<typeof spawn> }>()
 
+// --- Concurrency limiter -----------------------------------------------
+// MAX_CONCURRENT_DOWNLOADS was previously read into config but never
+// enforced; every submitted URL downloaded in parallel unbounded.
+const MAX_CONCURRENT = config.maxConcurrentDownloads
+let activeCount = 0
+const waitQueue: Array<() => void> = []
+
+async function acquireSlot(): Promise<void> {
+  if (activeCount >= MAX_CONCURRENT) {
+    await new Promise<void>((resolve) => waitQueue.push(resolve))
+  }
+  activeCount++
+}
+
+function releaseSlot(): void {
+  activeCount--
+  const next = waitQueue.shift()
+  if (next) next()
+}
+
+// Progress writes are throttled so a chatty yt-dlp stdout stream doesn't
+// hammer the JSON DB with a write per line.
+const PROGRESS_WRITE_INTERVAL_MS = 1000
+const lastProgressWrite = new Map<string, number>()
+
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-z0-9\-_\.]/gi, '_').replace(/_+/g, '_').slice(0, 80)
 }
@@ -159,12 +184,13 @@ function parseProgress(line: string): number {
   return 0
 }
 
-export async function queueDownload(url: string, backend: StorageBackend): Promise<Video> {
+export async function queueDownload(url: string, backend: StorageBackend, userId: string): Promise<Video> {
   const id = uuidv4()
   const now = new Date().toISOString()
 
   const video: Video = {
     id,
+    userId,
     url,
     title: null,
     thumbnailUrl: null,
@@ -180,14 +206,32 @@ export async function queueDownload(url: string, backend: StorageBackend): Promi
   }
 
   await db.create(video)
-  processDownload(id, url, backend).catch(console.error)
+
+  const controller = new AbortController()
+  activeJobs.set(id, { controller })
+  scheduleDownload(id, url, backend, controller)
+
   return video
 }
 
-async function processDownload(id: string, url: string, backend: StorageBackend) {
-  const controller = new AbortController()
-  activeJobs.set(id, { controller })
+function scheduleDownload(id: string, url: string, backend: StorageBackend, controller: AbortController): void {
+  acquireSlot()
+    .then(() => {
+      if (controller.signal.aborted) {
+        releaseSlot()
+        return
+      }
+      return processDownload(id, url, backend, controller).finally(releaseSlot)
+    })
+    .catch(console.error)
+}
 
+async function processDownload(
+  id: string,
+  url: string,
+  backend: StorageBackend,
+  controller: AbortController
+): Promise<void> {
   const workDir = join(config.downloadDir, id)
   const outTemplate = join(workDir, 'video.%(ext)s')
 
@@ -213,6 +257,7 @@ async function processDownload(id: string, url: string, backend: StorageBackend)
       '-f', formatSelector,
       '--merge-output-format', 'mp4',
       '--remux-video', 'mp4',
+      '--max-filesize', String(config.maxFileSizeBytes),
       '--output', outTemplate,
       url,
     ]
@@ -221,9 +266,12 @@ async function processDownload(id: string, url: string, backend: StorageBackend)
       signal: controller.signal,
       onProgress: (line) => {
         const progress = parseProgress(line)
-        if (progress > 0) {
-          db.update(id, { progress: Math.min(Math.round(progress), 99) }).catch(console.error)
-        }
+        if (progress <= 0) return
+        const now = Date.now()
+        const last = lastProgressWrite.get(id) || 0
+        if (now - last < PROGRESS_WRITE_INTERVAL_MS) return
+        lastProgressWrite.set(id, now)
+        db.update(id, { progress: Math.min(Math.round(progress), 99) }).catch(console.error)
       },
     })
 
@@ -275,6 +323,7 @@ async function processDownload(id: string, url: string, backend: StorageBackend)
     await db.update(id, { status: 'failed', error: err.message || 'Unknown error' })
   } finally {
     activeJobs.delete(id)
+    lastProgressWrite.delete(id)
     try {
       if (existsSync(workDir)) {
         await rm(workDir, { recursive: true, force: true })
@@ -285,7 +334,10 @@ async function processDownload(id: string, url: string, backend: StorageBackend)
   }
 }
 
-export async function cancelDownload(id: string): Promise<boolean> {
+export async function cancelDownload(id: string, userId: string): Promise<boolean> {
+  const video = await db.get(id)
+  if (!video || video.userId !== userId) return false
+
   const job = activeJobs.get(id)
   if (job) {
     job.controller.abort()
@@ -295,9 +347,16 @@ export async function cancelDownload(id: string): Promise<boolean> {
   return false
 }
 
-export async function deleteVideo(id: string): Promise<boolean> {
+export async function deleteVideo(id: string, userId: string): Promise<boolean> {
   const video = await db.get(id)
-  if (!video) return false
+  if (!video || video.userId !== userId) return false
+
+  // Abort an in-flight download for this video, if any.
+  const job = activeJobs.get(id)
+  if (job) {
+    job.controller.abort()
+    activeJobs.delete(id)
+  }
 
   if (video.storageKey) {
     try {
@@ -313,9 +372,17 @@ export async function deleteVideo(id: string): Promise<boolean> {
   return true
 }
 
-export async function getVideoPublicUrl(id: string): Promise<string | null> {
+export async function getVideoPublicUrl(id: string, userId: string): Promise<string | null> {
   const video = await db.get(id)
-  if (!video || !video.storageKey) return null
+  if (!video || video.userId !== userId || !video.storageKey) return null
   const provider = await createStorageProvider(video.storageBackend)
   return provider.getPublicUrl(video.storageKey)
+}
+
+/** Best-effort abort of every in-flight download; used on graceful shutdown. */
+export function shutdownActiveJobs(): void {
+  for (const [id, job] of activeJobs) {
+    job.controller.abort()
+    activeJobs.delete(id)
+  }
 }
