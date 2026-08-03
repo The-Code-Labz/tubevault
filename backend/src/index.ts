@@ -47,6 +47,16 @@ app.get('/api/health', async (_req, res) => {
   }
 })
 
+// Public runtime config for the frontend — read live from process.env, so the
+// Supabase project can be reconfigured by editing .env + restarting the container,
+// no rebuild required. Only ever exposes the anon (public) key, never the service key.
+app.get('/api/config', (_req, res) => {
+  res.json({
+    supabaseUrl: config.supabaseUrl,
+    supabaseAnonKey: config.supabaseAnonKey,
+  })
+})
+
 // Every /api/videos* route requires a valid Supabase session.
 app.use('/api/videos', requireAuth)
 

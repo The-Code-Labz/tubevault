@@ -4,12 +4,9 @@ services:
   tubevault:
     # Prebuilt via GitHub Actions (.github/workflows/docker.yml) on every push to main.
     # Tags: :latest, :main, :sha-<short>, and semver tags on releases.
-    # NOTE: VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY used to be passed as compose
-    # `build.args` — that no longer applies since there's no local build step here.
-    # Vite bakes those into the static frontend bundle at IMAGE BUILD time, so they
-    # must be set as GitHub Actions secrets/repo vars in the CI workflow instead.
-    # If they're missing there, the shipped image's frontend won't have Supabase auth
-    # configured, regardless of what you set in this compose file's environment below.
+    # Supabase config (SUPABASE_URL/SUPABASE_ANON_KEY/SUPABASE_SERVICE_KEY below) is
+    # read at container RUNTIME — no build-args/CI secrets needed. The frontend
+    # fetches the public URL/anon key from GET /api/config on load.
     image: ghcr.io/the-code-labz/tubevault:${TUBEVAULT_IMAGE_TAG:-latest}
     container_name: tubevault
     # Direct port publish is optional once Traefik is routing to the `traefik` network below.
@@ -33,6 +30,7 @@ services:
       - STORAGE_BACKEND=${STORAGE_BACKEND:-supabase}
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
       - SUPABASE_BUCKET=${SUPABASE_BUCKET:-videos}
       - R2_ENDPOINT=${R2_ENDPOINT}
       - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}

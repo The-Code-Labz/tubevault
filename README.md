@@ -36,10 +36,10 @@ cp .env.example .env
 Authentication is required and backed by [Supabase Auth](https://supabase.com/docs/guides/auth). In your Supabase project:
 
 1. Enable the **Email** auth provider (Authentication → Providers).
-2. Copy the **Project URL** and **anon public key** into `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`.
+2. Copy the **Project URL** and **anon public key** into `SUPABASE_URL` / `SUPABASE_ANON_KEY`.
 3. Copy the **service_role key** into `SUPABASE_SERVICE_KEY` (backend-only — never expose this client-side).
 
-`VITE_*` values are baked into the frontend bundle at **build time**, not read at container runtime — `docker compose up --build` picks them up from `.env` automatically via the compose file's `build.args`.
+All three are read at container **runtime** — the frontend fetches `SUPABASE_URL`/`SUPABASE_ANON_KEY` from the backend on load (`GET /api/config`), so nothing is baked into the image at build time. Just edit `.env` and restart the container to change or rotate them; no rebuild required.
 
 ### 3. Run with Docker (recommended)
 
@@ -67,8 +67,7 @@ npm start
 | `SUPABASE_URL` | **Yes** | Project URL — backs auth verification always, and storage when `STORAGE_BACKEND=supabase` |
 | `SUPABASE_SERVICE_KEY` | **Yes** | Service role key (backend-only, never expose client-side) |
 | `SUPABASE_BUCKET` | No | Bucket name (default `videos`) |
-| `VITE_SUPABASE_URL` | **Yes** | Same project URL, exposed to the frontend build |
-| `VITE_SUPABASE_ANON_KEY` | **Yes** | Public anon key, used by the browser to sign in/up |
+| `SUPABASE_ANON_KEY` | **Yes** | Public anon key — served to the frontend at runtime via `GET /api/config`, used by the browser to sign in/up |
 | `R2_ENDPOINT` | If R2 | S3 endpoint |
 | `R2_ACCESS_KEY_ID` | If R2 | Access key |
 | `R2_SECRET_ACCESS_KEY` | If R2 | Secret key |
@@ -140,7 +139,7 @@ By default the API sends no CORS headers (same-origin only). If the frontend is 
 - Every `/api/videos*` route requires a valid Supabase session; there is no more open/anonymous access.
 - Download URLs are checked against a best-effort SSRF allowlist (blocks loopback/private/link-local/cloud-metadata address ranges) before being handed to `yt-dlp`. This resolves DNS once at validation time — it reduces but does not eliminate DNS-rebinding risk, so still run this behind network egress restrictions if downloading from untrusted URLs matters to your threat model.
 - Set strong RLS / bucket policies on your Supabase Storage bucket.
-- Keep your service keys in `.env` only — never commit them. `VITE_SUPABASE_ANON_KEY` is the one exception meant to be public (it's the browser client key).
+- Keep your service keys in `.env` only — never commit them. `SUPABASE_ANON_KEY` is the one exception meant to be public (it's the browser client key, served via `GET /api/config`).
 
 ## License
 

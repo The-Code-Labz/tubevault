@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { supabase } from './supabase.ts'
+import { getSupabase } from './supabase.ts'
 
 interface AuthContextValue {
   session: Session | null
@@ -17,6 +17,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    const supabase = getSupabase()
+
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session)
       setLoading(false)
@@ -30,17 +32,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   async function signIn(email: string, password: string): Promise<string | null> {
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    const { error } = await getSupabase().auth.signInWithPassword({ email, password })
     return error ? error.message : null
   }
 
   async function signUp(email: string, password: string): Promise<string | null> {
-    const { error } = await supabase.auth.signUp({ email, password })
+    const { error } = await getSupabase().auth.signUp({ email, password })
     return error ? error.message : null
   }
 
   async function signOut(): Promise<void> {
-    await supabase.auth.signOut()
+    await getSupabase().auth.signOut()
   }
 
   return (

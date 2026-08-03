@@ -2,7 +2,8 @@ import 'dotenv/config'
 
 function parseCustomArgs(value: string | undefined): string[] {
   if (!value) return []
-  // Support comma-separated or space-separated args. Preserve quoted groups if needed.
+  // Support comma-separated or space-separated args. No quote-awareness — a value
+  // needing an embedded space (e.g. `--add-header "X: y"`) will be split incorrectly.
   return value
     .split(/[\s,]+/)
     .map((s) => s.trim())
@@ -28,6 +29,10 @@ export const config = {
   supabaseUrl: process.env.SUPABASE_URL || '',
   supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY || '',
   supabaseBucket: process.env.SUPABASE_BUCKET || 'videos',
+  // Public anon key — safe to expose to the browser. Served to the frontend at
+  // RUNTIME via GET /api/config (see index.ts) instead of being baked into the
+  // Vite bundle at build time, so it can just be set in .env like everything else.
+  supabaseAnonKey: process.env.SUPABASE_ANON_KEY || '',
 
   // Cloudflare R2 (S3-compatible)
   r2Endpoint: process.env.R2_ENDPOINT || '',
@@ -61,6 +66,7 @@ export function validateConfig() {
   // Supabase is now mandatory: it backs authentication regardless of storage backend.
   requireEnv('SUPABASE_URL')
   requireEnv('SUPABASE_SERVICE_KEY')
+  requireEnv('SUPABASE_ANON_KEY')
 
   if (config.storageBackend === 'r2') {
     if (!config.r2Endpoint || !config.r2AccessKeyId || !config.r2SecretAccessKey) {

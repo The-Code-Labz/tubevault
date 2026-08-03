@@ -1,10 +1,10 @@
-import { supabase } from './supabase.ts'
+import { getSupabase } from './supabase.ts'
 import type { DownloadRequest, Video } from '../types.ts'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 async function authHeaders(): Promise<Record<string, string>> {
-  const { data } = await supabase.auth.getSession()
+  const { data } = await getSupabase().auth.getSession()
   const token = data.session?.access_token
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
