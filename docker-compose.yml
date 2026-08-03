@@ -2,14 +2,31 @@ version: '3.8'
 
 services:
   tubevault:
-    build:
-      context: .
-      args:
-        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
-        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+    # Prebuilt via GitHub Actions (.github/workflows/docker.yml) on every push to main.
+    # Tags: :latest, :main, :sha-<short>, and semver tags on releases.
+    # NOTE: VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY used to be passed as compose
+    # `build.args` — that no longer applies since there's no local build step here.
+    # Vite bakes those into the static frontend bundle at IMAGE BUILD time, so they
+    # must be set as GitHub Actions secrets/repo vars in the CI workflow instead.
+    # If they're missing there, the shipped image's frontend won't have Supabase auth
+    # configured, regardless of what you set in this compose file's environment below.
+    image: ghcr.io/the-code-labz/tubevault:${TUBEVAULT_IMAGE_TAG:-latest}
     container_name: tubevault
-    ports:
-      - "4050:4050"
+    # Direct port publish is optional once Traefik is routing to the `traefik` network below.
+    # Uncomment only if you also need to reach tubevault directly, bypassing the proxy.
+    # ports:
+    #   - "4050:4050"
+    networks:
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tubevault.entrypoints=websecure"
+      - "traefik.http.routers.tubevault.rule=Host(`${TUBEVAULT_HOSTNAME:-tubevault.example.com}`)"
+      - "traefik.http.routers.tubevault.tls=true"
+      - "traefik.http.routers.tubevault.tls.certresolver=${TRAEFIK_CERTRESOLVER:-cloudflare}"
+      - "traefik.http.services.tubevault.loadbalancer.server.port=4050"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik}"
+      - "traefik.http.routers.tubevault.service=tubevault"
     environment:
       - NODE_ENV=production
       - PORT=4050
@@ -39,3 +56,8 @@ services:
       # Optional: mount a cookies.txt file if you need authenticated/age-gated downloads
       # - ./cookies.txt:/app/data/cookies.txt:ro
     restart: unless-stopped
+
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}
