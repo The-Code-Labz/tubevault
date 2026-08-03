@@ -1,0 +1,34 @@
+FROM node:22-slim
+
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    python3 \
+    python3-pip \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --break-system-packages yt-dlp || pip3 install yt-dlp
+
+WORKDIR /app
+
+COPY package*.json ./
+COPY backend/package*.json ./backend/
+COPY frontend/package*.json ./frontend/
+
+RUN npm install
+
+COPY . .
+
+RUN npm run build
+RUN cp -r frontend/dist backend/public
+
+ENV NODE_ENV=production
+ENV PORT=4050
+ENV DOWNLOAD_DIR=/app/data/downloads
+ENV DB_PATH=/app/data/videos.json
+
+EXPOSE 4050
+
+VOLUME ["/app/data"]
+
+CMD ["npm", "start"]

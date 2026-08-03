@@ -1,0 +1,19 @@
+[Unit]
+Description=TubeVault universal video downloader
+After=network.target
+
+[Service]
+Type=simple
+User=tubevault
+Group=tubevault
+WorkingDirectory=/opt/tubevault
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PORT=4050
+Environment=STORAGE_BACKEND=supabase
+EnvironmentFile=/opt/tubevault/.env
+
+[Install]
+WantedBy=multi-user.target
