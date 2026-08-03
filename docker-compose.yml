@@ -22,6 +22,15 @@ services:
       - MAX_CONCURRENT_DOWNLOADS=${MAX_CONCURRENT_DOWNLOADS:-2}
       - DOWNLOAD_DIR=/app/data/downloads
       - DB_PATH=/app/data/videos.json
+      - YTDLP_AUTO_UPDATE=${YTDLP_AUTO_UPDATE:-true}
+      - YTDLP_FORMAT=${YTDLP_FORMAT}
+      - YTDLP_USER_AGENT=${YTDLP_USER_AGENT}
+      - YTDLP_COOKIES_FROM_BROWSER=${YTDLP_COOKIES_FROM_BROWSER}
+      - YTDLP_COOKIES_FILE=${YTDLP_COOKIES_FILE}
+      - YTDLP_REFERER=${YTDLP_REFERER}
+      - YTDLP_CUSTOM_ARGS=${YTDLP_CUSTOM_ARGS}
     volumes:
       - ./data:/app/data
+      # Optional: mount a cookies.txt file if you need authenticated/age-gated downloads
+      # - ./cookies.txt:/app/data/cookies.txt:ro
     restart: unless-stopped

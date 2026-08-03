@@ -1,5 +1,14 @@
 import 'dotenv/config'
 
+function parseCustomArgs(value: string | undefined): string[] {
+  if (!value) return []
+  // Support comma-separated or space-separated args. Preserve quoted groups if needed.
+  return value
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
 function requireEnv(key: string): string {
   const value = process.env[key]
   if (!value) {
@@ -31,6 +40,15 @@ export const config = {
   downloadDir: process.env.DOWNLOAD_DIR || '/tmp/tubevault-downloads',
   maxConcurrentDownloads: parseInt(process.env.MAX_CONCURRENT_DOWNLOADS || '2', 10),
   maxFileSizeBytes: parseInt(process.env.MAX_FILE_SIZE_BYTES || `${5 * 1024 * 1024 * 1024}`, 10),
+
+  ytDlpPath: process.env.YTDLP_PATH || 'yt-dlp',
+  ytDlpAutoUpdate: process.env.YTDLP_AUTO_UPDATE !== 'false',
+  ytDlpFormat: process.env.YTDLP_FORMAT || '',
+  ytDlpUserAgent: process.env.YTDLP_USER_AGENT || '',
+  ytDlpCookiesFromBrowser: process.env.YTDLP_COOKIES_FROM_BROWSER || '',
+  ytDlpCookiesFile: process.env.YTDLP_COOKIES_FILE || '',
+  ytDlpReferer: process.env.YTDLP_REFERER || '',
+  ytDlpCustomArgs: parseCustomArgs(process.env.YTDLP_CUSTOM_ARGS),
 }
 
 export function validateConfig() {

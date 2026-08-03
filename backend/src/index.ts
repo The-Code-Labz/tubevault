@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import { config, validateConfig } from './config.js'
 import { db } from './db.js'
-import { queueDownload, deleteVideo, getVideoPublicUrl, cancelDownload } from './downloader.js'
+import { queueDownload, deleteVideo, getVideoPublicUrl, cancelDownload, getYtDlpVersion, updateYtDlp } from './downloader.js'
 import { z } from 'zod'
 import type { StorageBackend } from './types.js'
 
@@ -15,12 +15,23 @@ const downloadSchema = z.object({
   backend: z.enum(['supabase', 'r2']).optional(),
 })
 
-app.get('/api/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    storageBackend: config.storageBackend,
-    timestamp: new Date().toISOString(),
-  })
+app.get('/api/health', async (_req, res) => {
+  try {
+    const ytDlp = await getYtDlpVersion()
+    res.json({
+      status: 'ok',
+      storageBackend: config.storageBackend,
+      ytDlp,
+      timestamp: new Date().toISOString(),
+    })
+  } catch (err: any) {
+    res.status(503).json({
+      status: 'error',
+      storageBackend: config.storageBackend,
+      error: err.message,
+      timestamp: new Date().toISOString(),
+    })
+  }
 })
 
 app.get('/api/videos', async (_req, res) => {
@@ -107,6 +118,14 @@ app.get('*', (_req, res) => {
 
 async function main() {
   validateConfig()
+
+  try {
+    const updateResult = await updateYtDlp()
+    console.log(`yt-dlp: ${updateResult}`)
+  } catch (err: any) {
+    console.warn(`yt-dlp update check failed: ${err.message}`)
+  }
+
   app.listen(config.port, () => {
     console.log(`TubeVault API running on http://localhost:${config.port}`)
     console.log(`Storage backend: ${config.storageBackend}`)

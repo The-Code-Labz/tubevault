@@ -14,28 +14,109 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[^a-z0-9\-_\.]/gi, '_').replace(/_+/g, '_').slice(0, 80)
 }
 
+export interface YtDlpVersion {
+  version: string
+  path: string
+  gitHead?: string
+}
+
+export async function getYtDlpVersion(): Promise<YtDlpVersion> {
+  return new Promise((resolve, reject) => {
+    const ytDlpPath = config.ytDlpPath
+    const child = spawn(ytDlpPath, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (d) => (stdout += d.toString()))
+    child.stderr.on('data', (d) => (stderr += d.toString()))
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code !== 0) {
+        return reject(new Error(`yt-dlp --version failed: ${stderr || 'unknown'}`))
+      }
+      resolve({ version: stdout.trim(), path: ytDlpPath })
+    })
+  })
+}
+
+export async function updateYtDlp(): Promise<string> {
+  if (!config.ytDlpAutoUpdate) {
+    return 'auto-update disabled'
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn(config.ytDlpPath, ['-U'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      reject(new Error('yt-dlp update timed out after 60s'))
+    }, 60000)
+    child.stdout.on('data', (d) => (stdout += d.toString()))
+    child.stderr.on('data', (d) => (stderr += d.toString()))
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      reject(err)
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0 || stdout.includes('Updated yt-dlp') || stdout.includes('up to date')) {
+        resolve(stdout.trim() || 'yt-dlp up to date')
+      } else {
+        reject(new Error(`yt-dlp update failed (${code}): ${stderr || stdout || 'unknown'}`))
+      }
+    })
+  })
+}
+
+function buildBaseArgs(): string[] {
+  const args: string[] = ['--no-playlist', '--newline']
+
+  if (config.ytDlpUserAgent) {
+    args.push('--user-agent', config.ytDlpUserAgent)
+  }
+
+  if (config.ytDlpCookiesFromBrowser) {
+    args.push('--cookies-from-browser', config.ytDlpCookiesFromBrowser)
+  }
+
+  if (config.ytDlpCookiesFile) {
+    args.push('--cookies', config.ytDlpCookiesFile)
+  }
+
+  if (config.ytDlpReferer) {
+    args.push('--add-header', `Referer:${config.ytDlpReferer}`)
+  }
+
+  if (config.ytDlpCustomArgs.length > 0) {
+    args.push(...config.ytDlpCustomArgs)
+  }
+
+  return args
+}
+
 async function runYtDlp(
   args: string[],
   options: { signal?: AbortSignal; onProgress?: (line: string) => void } = {}
-): Promise<void> {
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const ytDlpPath = process.env.YTDLP_PATH || 'yt-dlp'
-    const child = spawn(ytDlpPath, args, {
+    const child = spawn(config.ytDlpPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
+    let stdout = ''
     let stderr = ''
     child.stdout.on('data', (data) => {
       const line = data.toString()
+      stdout += line
       if (options.onProgress) options.onProgress(line)
     })
     child.stderr.on('data', (data) => {
-      stderr += data.toString()
-      if (options.onProgress) options.onProgress(data.toString())
+      const line = data.toString()
+      stderr += line
+      if (options.onProgress) options.onProgress(line)
     })
     child.on('error', reject)
     child.on('close', (code) => {
-      if (code === 0) resolve()
+      if (code === 0) resolve({ stdout, stderr })
       else reject(new Error(`yt-dlp exited with code ${code}: ${stderr || 'unknown error'}`))
     })
 
@@ -46,44 +127,30 @@ async function runYtDlp(
   })
 }
 
-async function fetchMetadata(url: string, signal?: AbortSignal): Promise<{
+export async function fetchMetadata(url: string, signal?: AbortSignal): Promise<{
   title: string
   duration?: number
   thumbnail?: string
   ext?: string
+  extractor?: string
+  uploader?: string
 }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('yt-dlp', ['--dump-single-json', '--no-playlist', '--no-warnings', url], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
+  const args = [...buildBaseArgs(), '--dump-single-json', url]
+  const { stdout, stderr } = await runYtDlp(args, { signal })
 
-    signal?.addEventListener('abort', () => {
-      child.kill('SIGTERM')
-      setTimeout(() => child.kill('SIGKILL'), 5000)
-    })
-
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (d) => (stdout += d.toString()))
-    child.stderr.on('data', (d) => (stderr += d.toString()))
-    child.on('error', reject)
-    child.on('close', (code) => {
-      if (code !== 0) {
-        return reject(new Error(`yt-dlp metadata failed with code ${code}: ${stderr || 'unknown error'}`))
-      }
-      try {
-        const data = JSON.parse(stdout)
-        resolve({
-          title: data.title || 'untitled',
-          duration: data.duration ? Math.round(data.duration) : undefined,
-          thumbnail: data.thumbnail,
-          ext: data.ext,
-        })
-      } catch (err) {
-        reject(new Error(`Failed to parse yt-dlp metadata: ${err instanceof Error ? err.message : 'unknown'}`))
-      }
-    })
-  })
+  try {
+    const data = JSON.parse(stdout)
+    return {
+      title: data.title || 'untitled',
+      duration: data.duration ? Math.round(data.duration) : undefined,
+      thumbnail: data.thumbnail,
+      ext: data.ext,
+      extractor: data.extractor,
+      uploader: data.uploader || data.channel || data.uploader_id,
+    }
+  } catch (err) {
+    throw new Error(`Failed to parse yt-dlp metadata: ${err instanceof Error ? err.message : 'unknown'}; stderr: ${stderr.slice(0, 500)}`)
+  }
 }
 
 function parseProgress(line: string): number {
@@ -135,38 +202,58 @@ async function processDownload(id: string, url: string, backend: StorageBackend)
       thumbnailUrl: metadata.thumbnail || null,
     })
 
-    await runYtDlp(
-      [
-        '--no-playlist',
-        '--newline',
-        '--no-warnings',
-        '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        '--merge-output-format', 'mp4',
-        '--output', outTemplate,
-        url,
-      ],
-      {
-        signal: controller.signal,
-        onProgress: (line) => {
-          const progress = parseProgress(line)
-          if (progress > 0) {
-            db.update(id, { progress: Math.min(Math.round(progress), 99) }).catch(console.error)
-          }
-        },
-      }
-    )
+    // Adult and HLS-heavy sites often don't expose separate audio/video MP4 streams.
+    // Fallback chain: bestvideo+bestaudio merged → best single file → worst (last resort).
+    const formatSelector =
+      config.ytDlpFormat ||
+      'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best/best*[ext=mp4]/worst'
 
-    const files = (await readdir(workDir)).map((name) => join(workDir, name))
+    const args = [
+      ...buildBaseArgs(),
+      '-f', formatSelector,
+      '--merge-output-format', 'mp4',
+      '--remux-video', 'mp4',
+      '--output', outTemplate,
+      url,
+    ]
+
+    await runYtDlp(args, {
+      signal: controller.signal,
+      onProgress: (line) => {
+        const progress = parseProgress(line)
+        if (progress > 0) {
+          db.update(id, { progress: Math.min(Math.round(progress), 99) }).catch(console.error)
+        }
+      },
+    })
+
+    const entries = (await readdir(workDir)).map((name) => join(workDir, name))
+    const fileStats = await Promise.all(
+      entries.map(async (path) => {
+        try {
+          const s = await stat(path)
+          return { path, isFile: s.isFile(), size: s.size }
+        } catch {
+          return { path, isFile: false, size: 0 }
+        }
+      })
+    )
+    const candidates = fileStats
+      .filter((f) => f.isFile && !f.path.endsWith('.json') && !f.path.endsWith('.txt') && !f.path.endsWith('.nfo'))
+      .sort((a, b) => b.size - a.size)
+
     const videoFile =
-      files.find((f) => f.endsWith('.mp4')) ||
-      files.find((f) => ['.mp4', '.webm', '.mkv', '.mov'].includes(extname(f)))
+      candidates.find((f) => f.path.endsWith('.mp4'))?.path ||
+      candidates.find((f) => ['.mp4', '.webm', '.mkv', '.mov'].includes(extname(f.path).toLowerCase()))?.path ||
+      candidates[0]?.path
+
     if (!videoFile) {
       throw new Error('Download completed but no video file found')
     }
 
-    const fileStats = await stat(videoFile)
-    if (fileStats.size > config.maxFileSizeBytes) {
-      throw new Error(`File size ${fileStats.size} exceeds maximum allowed ${config.maxFileSizeBytes}`)
+    const videoStat = await stat(videoFile)
+    if (videoStat.size > config.maxFileSizeBytes) {
+      throw new Error(`File size ${videoStat.size} exceeds maximum allowed ${config.maxFileSizeBytes}`)
     }
 
     await db.update(id, { status: 'uploading', progress: 99 })
@@ -181,7 +268,7 @@ async function processDownload(id: string, url: string, backend: StorageBackend)
       status: 'complete',
       progress: 100,
       storageKey,
-      fileSize: fileStats.size,
+      fileSize: videoStat.size,
     })
   } catch (err: any) {
     console.error(`Download ${id} failed:`, err)

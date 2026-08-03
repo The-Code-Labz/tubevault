@@ -65,8 +65,35 @@ npm start
 | `R2_PUBLIC_URL` | No | Public CDN base URL |
 | `MAX_FILE_SIZE_BYTES` | No | Max download size (default 5GB) |
 | `MAX_CONCURRENT_DOWNLOADS` | No | Parallel jobs (default 2) |
+| `YTDLP_AUTO_UPDATE` | No | Run `yt-dlp -U` on startup (default `true`) |
+| `YTDLP_FORMAT` | No | Override format selector |
+| `YTDLP_USER_AGENT` | No | Set a browser user-agent |
+| `YTDLP_COOKIES_FROM_BROWSER` | No | e.g. `firefox`, `chrome` |
+| `YTDLP_COOKIES_FILE` | No | Path to a Netscape cookies.txt |
+| `YTDLP_REFERER` | No | Force a Referer header |
+| `YTDLP_CUSTOM_ARGS` | No | Extra args passed to yt-dlp |
 
-## Architecture
+## Adult sites (RedTube, PornHub, XVideos, etc.)
+
+yt-dlp supports these sites, but they often require extra handling:
+
+1. **Keep yt-dlp up to date.** TubeVault runs `yt-dlp -U` on startup by default. Site extractors break frequently.
+2. **Use a real user-agent.** Add to `.env`:
+   ```bash
+   YTDLP_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+   ```
+3. **Pass cookies if age-gated.** Either:
+   ```bash
+   YTDLP_COOKIES_FROM_BROWSER=firefox
+   # or
+   YTDLP_COOKIES_FILE=./cookies.txt
+   ```
+4. **Cloud/VPS IP blocks.** Many adult sites block datacenter IPs. If downloads fail with HTTP 403 or "unable to extract", run TubeVault from a residential connection or proxy `yt-dlp` traffic.
+5. **Debug a URL quickly.** SSH into the container/server and run:
+   ```bash
+   yt-dlp --dump-single-json --cookies-from-browser firefox "https://..."
+   ```
+   Once that works, paste the same URL into TubeVault.
 
 ```
 Frontend (React + Vite)  ──▶  Backend (Express + TypeScript)
