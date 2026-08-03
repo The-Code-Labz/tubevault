@@ -4,7 +4,12 @@ import type { StorageBackend } from './types.js'
 export interface StorageProvider {
   upload(key: string, filePath: string, contentType: string): Promise<void>
   delete(key: string): Promise<void>
-  getPublicUrl(key: string): string
+  /**
+   * Returns a URL the client can use to stream/download the object.
+   * MUST be called fresh per authenticated request — implementations may return
+   * a short-lived signed URL and callers must not cache or persist the result.
+   */
+  getStreamUrl(key: string): Promise<string>
 }
 
 // Supabase Storage provider
@@ -15,11 +20,27 @@ async function createSupabaseProvider(): Promise<StorageProvider> {
   const { data: bucket, error } = await supabase.storage.getBucket(config.supabaseBucket)
   if (error && error.message?.includes('not found')) {
     const { error: createError } = await supabase.storage.createBucket(config.supabaseBucket, {
-      public: true,
+      public: false,
     })
     if (createError) throw createError
   } else if (error) {
     throw error
+  } else if (bucket?.public) {
+    // Bucket pre-existed (e.g. deployed before this fix) as public. Flip it private.
+    // Note: this stops NEW unsigned access immediately, but any public URL that was
+    // already handed out/cached/crawled before the flip may keep working briefly at
+    // any CDN/proxy edge caching layer in front of Supabase Storage until its cache
+    // entry expires — flipping `public` is not a retroactive revoke of prior URLs.
+    // Rotating storage keys (re-upload under new paths) is the only hard guarantee
+    // for objects that were already exposed under a public URL.
+    const { error: updateError } = await supabase.storage.updateBucket(config.supabaseBucket, {
+      public: false,
+    })
+    if (updateError) throw updateError
+    console.warn(
+      `[storage] Supabase bucket "${config.supabaseBucket}" was public and has been switched to private. ` +
+        `If any object keys in this bucket were previously shared/leaked as public URLs, rotate those objects.`
+    )
   }
 
   return {
@@ -38,9 +59,12 @@ async function createSupabaseProvider(): Promise<StorageProvider> {
       const { error } = await supabase.storage.from(config.supabaseBucket).remove([key])
       if (error) throw error
     },
-    getPublicUrl(key) {
-      const { data } = supabase.storage.from(config.supabaseBucket).getPublicUrl(key)
-      return data.publicUrl
+    async getStreamUrl(key) {
+      const { data, error: signError } = await supabase.storage
+        .from(config.supabaseBucket)
+        .createSignedUrl(key, config.supabaseSignedUrlTtlSeconds)
+      if (signError) throw signError
+      return data.signedUrl
     },
   }
 }
@@ -85,7 +109,12 @@ async function createR2Provider(): Promise<StorageProvider> {
         })
       )
     },
-    getPublicUrl(key) {
+    // R2 backend intentionally still returns a plain (unsigned) URL, matching how
+    // R2 is normally fronted: either a public bucket dev URL or a custom CDN domain
+    // via R2_PUBLIC_URL. That's a different threat model than the Supabase bucket
+    // (this repo doesn't manage R2 bucket ACLs), so it's out of scope for this fix.
+    // Wrapped in a resolved Promise only to satisfy the shared StorageProvider interface.
+    async getStreamUrl(key) {
       if (config.r2PublicUrl) {
         return `${config.r2PublicUrl.replace(/\/$/, '')}/${key}`
       }

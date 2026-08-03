@@ -372,11 +372,16 @@ export async function deleteVideo(id: string, userId: string): Promise<boolean> 
   return true
 }
 
-export async function getVideoPublicUrl(id: string, userId: string): Promise<string | null> {
+/**
+ * Mints a fresh stream URL for a video, gated by ownership. Callers must not cache
+ * or persist the returned URL — for Supabase this is a short-TTL signed URL, and a
+ * new one is generated on every call.
+ */
+export async function getVideoStreamUrl(id: string, userId: string): Promise<string | null> {
   const video = await db.get(id)
   if (!video || video.userId !== userId || !video.storageKey) return null
   const provider = await createStorageProvider(video.storageBackend)
-  return provider.getPublicUrl(video.storageKey)
+  return provider.getStreamUrl(video.storageKey)
 }
 
 /** Best-effort abort of every in-flight download; used on graceful shutdown. */

@@ -29,6 +29,11 @@ export const config = {
   supabaseUrl: process.env.SUPABASE_URL || '',
   supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY || '',
   supabaseBucket: process.env.SUPABASE_BUCKET || 'videos',
+  // TTL (seconds) for signed Storage URLs handed to clients via /api/videos/:id/stream.
+  // Short-lived on purpose: the URL grants unauthenticated bearer access to the object
+  // for as long as it's valid, so we mint a fresh one per authenticated request rather
+  // than caching/storing it. Default 1 hour is enough to stream/download a video.
+  supabaseSignedUrlTtlSeconds: Math.max(60, parseInt(process.env.SUPABASE_SIGNED_URL_TTL_SECONDS || '3600', 10)),
   // Public anon key — safe to expose to the browser. Served to the frontend at
   // RUNTIME via GET /api/config (see index.ts) instead of being baked into the
   // Vite bundle at build time, so it can just be set in .env like everything else.

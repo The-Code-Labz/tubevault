@@ -5,7 +5,7 @@ import { db } from './db.js'
 import {
   queueDownload,
   deleteVideo,
-  getVideoPublicUrl,
+  getVideoStreamUrl,
   cancelDownload,
   getYtDlpVersion,
   updateYtDlp,
@@ -107,7 +107,7 @@ app.get('/api/videos/:id', async (req: AuthedRequest, res) => {
 
 app.get('/api/videos/:id/stream', async (req: AuthedRequest, res) => {
   try {
-    const url = await getVideoPublicUrl(req.params.id, req.userId!)
+    const url = await getVideoStreamUrl(req.params.id, req.userId!)
     if (!url) {
       res.status(404).json({ error: 'Video not ready or not found' })
       return
