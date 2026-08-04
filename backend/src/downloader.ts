@@ -104,7 +104,17 @@ function buildBaseArgs(): string[] {
   }
 
   if (config.ytDlpCookiesFile) {
-    args.push('--cookies', config.ytDlpCookiesFile)
+    // yt-dlp does NOT error when --cookies points at a missing file — it silently
+    // proceeds unauthenticated, which surfaces later as a confusing extractor
+    // failure with no mention of cookies at all. Fail loud here instead.
+    if (!existsSync(config.ytDlpCookiesFile)) {
+      console.warn(
+        `WARNING: YTDLP_COOKIES_FILE is set to "${config.ytDlpCookiesFile}" but that file does not exist ` +
+          `inside the container. Downloads will proceed WITHOUT cookies. Check your volume mount / path.`
+      )
+    } else {
+      args.push('--cookies', config.ytDlpCookiesFile)
+    }
   }
 
   if (config.ytDlpReferer) {

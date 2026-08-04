@@ -114,12 +114,18 @@ yt-dlp supports these sites, but they often require extra handling:
    ```bash
    YTDLP_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
    ```
-3. **Pass cookies if age-gated.** Either:
+3. **Pass cookies if age-gated.** `YTDLP_COOKIES_FROM_BROWSER` doesn't apply in Docker (no
+   browser profile inside the container). Use a cookies.txt file instead:
    ```bash
-   YTDLP_COOKIES_FROM_BROWSER=firefox
-   # or
-   YTDLP_COOKIES_FILE=./cookies.txt
+   # Drop your exported Netscape-format cookies.txt at ./data/cookies.txt on the host
+   # (the ./data volume is already mounted to /app/data), then set the CONTAINER path:
+   YTDLP_COOKIES_FILE=/app/data/cookies.txt
    ```
+   A relative path (`./cookies.txt`) will NOT work — yt-dlp resolves it against the
+   backend process's cwd (`/app/backend`), not your host directory, and silently
+   downloads unauthenticated if the file isn't found there — no error, same failure
+   as no cookies at all. The backend now logs a startup warning if the configured
+   path doesn't exist inside the container.
 4. **Cloud/VPS IP blocks.** Many adult sites block datacenter IPs. If downloads fail with HTTP 403 or "unable to extract", run TubeVault from a residential connection or proxy `yt-dlp` traffic.
 5. **Debug a URL quickly.** SSH into the container/server and run:
    ```bash
