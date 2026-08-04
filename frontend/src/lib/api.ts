@@ -40,4 +40,27 @@ export const api = {
   getStreamUrl(id: string) {
     return fetchJson<{ url: string }>(`/api/videos/${id}/stream`)
   },
+  retryVideo(id: string) {
+    return fetchJson<Video>(`/api/videos/${id}/retry`, { method: 'POST' })
+  },
+  async downloadVideo(id: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/api/videos/${id}/download`, { headers: await authHeaders() })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Download failed' }))
+      throw new Error(err.error || `Download failed: ${res.status}`)
+    }
+    const disposition = res.headers.get('content-disposition') || ''
+    const match = disposition.match(/filename="([^"]+)"/)
+    const filename = match?.[1] || `video-${id}.mp4`
+
+    const blob = await res.blob()
+    const objectUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(objectUrl)
+  },
 }
