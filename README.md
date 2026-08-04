@@ -119,7 +119,7 @@ npm start
 | `PLAYWRIGHT_HEADLESS` | No | Run Chromium headless (default `true`) |
 | `PLAYWRIGHT_TIMEOUT_MS` | No | Page load timeout (default `30000`) |
 | `PLAYWRIGHT_STEALTH` | No | Use playwright-extra stealth plugin if installed |
-| `PLAYWRIGHT_PROXY_SERVER` | No | Proxy for Chromium, e.g. `socks5://localhost:1080` |
+| `PLAYWRIGHT_PROXY_SERVER` | No | Proxy for Chromium, yt-dlp, and direct downloads, e.g. `socks5://user:pass@host:1080` |
 | `PLAYWRIGHT_COOKIES_FILE` | No | Cookie file for Chromium — JSON array **or** Netscape cookies.txt |
 | `PLAYWRIGHT_COOKIES_SAMESITE` | No | Override SameSite default (`Lax`) — try `None` for cross-site players |
 | `PLAYWRIGHT_EXTRA_ARGS` | No | Extra Chromium launch flags |
@@ -148,11 +148,16 @@ The fallback triggers automatically when yt-dlp fails on a domain matching `PLAY
    A relative path (`./cookies.txt`) will NOT work — yt-dlp resolves it against the backend process's cwd (`/app/backend`), not your host directory, and silently downloads unauthenticated if the file isn't found there — no error, same failure as no cookies at all. The backend now logs a startup warning if the configured path doesn't exist inside the container.
 3. **Cloud/VPS IP blocks.** Many adult sites block datacenter IPs. The browser fallback may still be blocked at the TCP/IP layer. Options:
    - Run TubeVault from a residential connection.
-   - Route Playwright through a proxy:
+   - Route **both** yt-dlp and Playwright through the same SOCKS5/HTTP proxy:
      ```bash
      PLAYWRIGHT_PROXY_SERVER=socks5://user:pass@host:1080
      ```
-   - Set the same proxy at the OS/container level for yt-dlp.
+     TubeVault will automatically pass this proxy to yt-dlp (`--proxy`) and to Chromium (with credentials split out), and it will route direct MP4 downloads through the same proxy. Check the container logs for a line like:
+     ```
+     [playwright] egress IP via api.ipify.org: {"ip":"1.2.3.4"}
+     ```
+     If that IP is still in Arizona (or wherever the block applies), the proxy itself is routing through that region — try a different proxy exit.
+   - Make sure your proxy actually carries DNS through the tunnel. TubeVault forces Chromium DNS over SOCKS5 when the protocol is `socks5://`. For HTTP proxies, DNS may still leak; prefer SOCKS5.
 4. **Debug a URL quickly.** SSH into the container/server and run:
    ```bash
    yt-dlp --dump-single-json --cookies-from-browser firefox "https://..."

@@ -9,8 +9,11 @@ import { config } from './config.js'
 import { db } from './db.js'
 import { createStorageProvider } from './storage.js'
 import { extractMediaUrls, buildCookieHeader } from './playwrightFallback.js'
+import { getProxy } from './proxy.js'
 import type { Cookie } from 'playwright'
 import type { StorageBackend, Video } from './types.js'
+import http from 'node:http'
+import https from 'node:https'
 
 const activeJobs = new Map<string, { controller: AbortController; child?: ReturnType<typeof spawn> }>()
 
@@ -218,6 +221,12 @@ async function buildBaseArgs(): Promise<string[]> {
 
   if (config.ytDlpReferer) {
     args.push('--add-header', `Referer:${config.ytDlpReferer}`)
+  }
+
+  if (config.playwrightProxyServer) {
+    // yt-dlp supports the same URL format with embedded credentials.
+    args.push('--proxy', config.playwrightProxyServer)
+    console.log(`[downloader] yt-dlp will use proxy: ${config.playwrightProxyServer.replace(/:\/\/[^:]+:[^@]+@/, '://***@')}`)
   }
 
   if (config.ytDlpCustomArgs.length > 0) {
@@ -538,17 +547,45 @@ async function downloadDirectMedia(
     }
   }
 
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: finalHeaders,
-    signal,
-  })
-
-  if (!response.ok) {
-    throw new Error(`Direct media download failed: HTTP ${response.status} ${response.statusText}`)
+  const proxy = getProxy()
+  if (proxy) {
+    console.log(`[downloader] routing direct download through proxy: ${proxy.serverUrl}`)
   }
 
-  const contentLength = parseInt(response.headers.get('content-length') || '0', 10)
+  const parsedUrl = new URL(url)
+  const agent = proxy?.agent
+  const requestModule = parsedUrl.protocol === 'https:' ? https : http
+
+  const response = await new Promise<http.IncomingMessage>((resolve, reject) => {
+    const req = requestModule.get(
+      url,
+      {
+        headers: finalHeaders,
+        agent,
+      },
+      (res) => resolve(res)
+    )
+
+    req.on('error', reject)
+
+    if (signal) {
+      const abort = () => {
+        req.destroy(new Error('Download aborted'))
+      }
+      if (signal.aborted) {
+        abort()
+        return
+      }
+      signal.addEventListener('abort', abort, { once: true })
+      req.on('close', () => signal.removeEventListener('abort', abort))
+    }
+  })
+
+  if (response.statusCode && (response.statusCode < 200 || response.statusCode >= 300)) {
+    throw new Error(`Direct media download failed: HTTP ${response.statusCode} ${response.statusMessage || ''}`)
+  }
+
+  const contentLength = parseInt(response.headers['content-length'] || '0', 10)
   if (contentLength === 0) {
     console.warn('[downloader] no Content-Length header; progress will be indeterminate')
   }
@@ -556,15 +593,10 @@ async function downloadDirectMedia(
   await mkdir(dirname(outputPath), { recursive: true })
   const fileStream = createWriteStream(outputPath)
 
-  if (!response.body) {
-    throw new Error('Direct media download failed: response body is empty')
-  }
-
-  const webStream = Readable.fromWeb(response.body as any)
   let downloaded = 0
   let lastReportedPercent = 0
 
-  webStream.on('data', (chunk: Buffer) => {
+  response.on('data', (chunk: Buffer) => {
     downloaded += chunk.length
     if (contentLength > 0 && onProgress) {
       const percent = Math.floor((downloaded / contentLength) * 100)
@@ -576,10 +608,10 @@ async function downloadDirectMedia(
   })
 
   await new Promise<void>((resolve, reject) => {
-    webStream.pipe(fileStream)
+    response.pipe(fileStream)
     fileStream.on('finish', resolve)
     fileStream.on('error', reject)
-    webStream.on('error', reject)
+    response.on('error', reject)
   })
 
   const stats = await stat(outputPath)

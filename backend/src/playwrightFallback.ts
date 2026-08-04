@@ -1,5 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type Page, type Response, type Cookie } from 'playwright'
 import { config } from './config.js'
+import { getProxy } from './proxy.js'
 import { writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
@@ -324,13 +325,24 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
   }
 
   try {
+    const proxy = getProxy()
+    if (proxy) {
+      console.log(`[playwright] using proxy: ${proxy.serverUrl} (auth=${proxy.hasAuth})`)
+    } else if (config.playwrightProxyServer) {
+      console.warn(`[playwright] PLAYWRIGHT_PROXY_SERVER is set but could not be parsed: "${config.playwrightProxyServer}"`)
+    }
+
     const launchArgs: string[] = [
       '--disable-blink-features=AutomationControlled',
       '--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process',
       '--disable-dev-shm-usage',
       '--no-sandbox',
-      ...(config.playwrightProxyServer ? [`--proxy-server=${config.playwrightProxyServer}`] : []),
+      ...(proxy ? [`--proxy-server=${proxy.serverUrl}`] : []),
+      // Force all DNS resolution through the proxy so the site can't see our real IP/location.
+      ...(proxy?.serverUrl.startsWith('socks5')
+        ? ['--host-resolver-rules="MAP * ~NOTFOUND , EXCLUDE localhost"']
+        : []),
       ...config.playwrightExtraArgs,
     ]
 
@@ -373,7 +385,7 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
       locale: 'en-US',
       viewport: { width: 1920, height: 1080 },
-      ...(config.playwrightProxyServer ? { proxy: { server: config.playwrightProxyServer } } : {}),
+      ...(proxy ? { proxy: proxy.playwrightProxy } : {}),
     })
 
     if (config.playwrightCookiesFile) {
@@ -381,6 +393,28 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
     }
 
     const page: Page = await context.newPage()
+
+    // --- Proxy diagnostics: log egress IP seen by the target site ------------
+    try {
+      const ipChecks = [
+        'https://api.ipify.org?format=json',
+        'https://httpbin.org/ip',
+        'https://checkip.amazonaws.com/',
+      ]
+      for (const ipUrl of ipChecks) {
+        try {
+          const ipResponse = await page.goto(ipUrl, { waitUntil: 'commit', timeout: 15000 })
+          const body = await ipResponse?.text().catch(() => '')
+          const cleanBody = (body || '').replace(/\s+/g, ' ').trim()
+          console.log(`[playwright] egress IP via ${new URL(ipUrl).hostname}: ${cleanBody}`)
+          break
+        } catch (ipErr) {
+          console.warn(`[playwright] IP check failed for ${ipUrl}:`, (ipErr as Error).message)
+        }
+      }
+    } catch {
+      // ignore diagnostic failures
+    }
 
     // Capture every request/response, including XHR/fetch, regardless of extension.
     page.on('request', (request) => {
