@@ -383,7 +383,7 @@ async function downloadWithYtDlp(
   return videoFile
 }
 
-function shouldTryPlaywrightFallback(url: string, errorMessage: string): boolean {
+function shouldTryPlaywrightFallback(url: string, _errorMessage: string): boolean {
   if (!config.playwrightFallbackEnabled) return false
   try {
     const regex = new RegExp(config.playwrightFallbackSites, 'i')
@@ -391,9 +391,10 @@ function shouldTryPlaywrightFallback(url: string, errorMessage: string): boolean
   } catch {
     return false
   }
-  // Only fall back on extraction / network / HTTP errors, not on local disk errors
-  const retryable = /extractor|unable to download|HTTP Error|403|404|blocked|unsupported|sign in|age|verify/i
-  return retryable.test(errorMessage)
+  // If the URL's hostname matches the fallback list, always try the browser.
+  // The hostname check is the real gate; relying on error-message heuristics
+  // caused "Unable to extract video URL" errors to skip the fallback.
+  return true
 }
 
 async function downloadWithPlaywrightFallback(
