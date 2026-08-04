@@ -111,7 +111,7 @@ npm start
 | `YTDLP_FORMAT` | No | Override format selector |
 | `YTDLP_USER_AGENT` | No | Set a browser user-agent |
 | `YTDLP_COOKIES_FROM_BROWSER` | No | e.g. `firefox`, `chrome` |
-| `YTDLP_COOKIES_FILE` | No | Path to a Netscape cookies.txt |
+| `YTDLP_COOKIES_FILE` | No | Path to a Netscape cookies.txt (inside container) |
 | `YTDLP_REFERER` | No | Force a Referer header |
 | `YTDLP_CUSTOM_ARGS` | No | Extra args passed to yt-dlp |
 | `PLAYWRIGHT_FALLBACK_ENABLED` | No | Browser fallback when yt-dlp fails on adult/JS sites (default `true`) |
@@ -120,7 +120,8 @@ npm start
 | `PLAYWRIGHT_TIMEOUT_MS` | No | Page load timeout (default `30000`) |
 | `PLAYWRIGHT_STEALTH` | No | Use playwright-extra stealth plugin if installed |
 | `PLAYWRIGHT_PROXY_SERVER` | No | Proxy for Chromium, e.g. `socks5://localhost:1080` |
-| `PLAYWRIGHT_COOKIES_FILE` | No | Path to cookies JSON for Chromium |
+| `PLAYWRIGHT_COOKIES_FILE` | No | Cookie file for Chromium — JSON array **or** Netscape cookies.txt |
+| `PLAYWRIGHT_COOKIES_SAMESITE` | No | Override SameSite default (`Lax`) — try `None` for cross-site players |
 | `PLAYWRIGHT_EXTRA_ARGS` | No | Extra Chromium launch flags |
 
 ## Adult sites (RedTube, PornHub, XVideos, etc.)
@@ -135,13 +136,14 @@ The fallback triggers automatically when yt-dlp fails on a domain matching `PLAY
 ### Tips for adult sites
 
 1. **Keep yt-dlp up to date.** TubeVault runs `yt-dlp -U` on startup by default. Site extractors break frequently.
-2. **Cookies / age gate.** `YTDLP_COOKIES_FROM_BROWSER` doesn't apply in Docker (no browser profile inside the container). Use a cookies.txt file instead:
+2. **Cookies / age gate.** `YTDLP_COOKIES_FROM_BROWSER` doesn't apply in Docker (no browser profile inside the container). Use a cookies file instead. TubeVault accepts **both** Netscape `cookies.txt` and JSON-array cookie exports:
    ```bash
-   # Drop your exported Netscape-format cookies.txt at ./data/cookies.txt on the host
+   # Drop your exported cookies at ./data/cookies.txt (or ./data/cookies.json) on the host
    # (the ./data volume is already mounted to /app/data), then set the CONTAINER path:
    YTDLP_COOKIES_FILE=/app/data/cookies.txt
-   # For the Playwright fallback you can also pass a Playwright-compatible cookies JSON:
-   PLAYWRIGHT_COOKIES_FILE=/app/data/cookies.json
+   PLAYWRIGHT_COOKIES_FILE=/app/data/cookies.txt   # same file works for both
+   # If the video player is cross-site, you may need:
+   PLAYWRIGHT_COOKIES_SAMESITE=None
    ```
    A relative path (`./cookies.txt`) will NOT work — yt-dlp resolves it against the backend process's cwd (`/app/backend`), not your host directory, and silently downloads unauthenticated if the file isn't found there — no error, same failure as no cookies at all. The backend now logs a startup warning if the configured path doesn't exist inside the container.
 3. **Cloud/VPS IP blocks.** Many adult sites block datacenter IPs. The browser fallback may still be blocked at the TCP/IP layer. Options:

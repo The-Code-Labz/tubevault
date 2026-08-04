@@ -81,6 +81,7 @@ export const config = {
   playwrightUserAgent: process.env.PLAYWRIGHT_USER_AGENT || '',
   playwrightProxyServer: process.env.PLAYWRIGHT_PROXY_SERVER || '',
   playwrightCookiesFile: process.env.PLAYWRIGHT_COOKIES_FILE || '',
+  playwrightCookiesSameSite: (process.env.PLAYWRIGHT_COOKIES_SAMESITE || 'Lax') as 'Strict' | 'Lax' | 'None',
   playwrightExtraArgs: parseCustomArgs(process.env.PLAYWRIGHT_EXTRA_ARGS),
 }
 

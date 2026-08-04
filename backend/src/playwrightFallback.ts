@@ -70,24 +70,100 @@ function scoreMediaUrl(url: string): number {
   }
 }
 
+interface PlaywrightCookie {
+  name: string
+  value: string
+  domain: string
+  path: string
+  httpOnly?: boolean
+  secure?: boolean
+  sameSite?: 'Strict' | 'Lax' | 'None'
+  expires?: number
+}
+
+function looksLikeNetscapeCookies(data: string): boolean {
+  // Netscape cookies.txt starts with # comments and has tab-separated lines.
+  // Accept if any non-comment line has 7 tab-separated fields.
+  return data.split('\n').some((line) => {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) return false
+    return trimmed.split('\t').length >= 6
+  })
+}
+
+function parseNetscapeCookies(data: string): PlaywrightCookie[] {
+  const cookies: PlaywrightCookie[] = []
+  for (const rawLine of data.split('\n')) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const parts = line.split('\t')
+    if (parts.length < 6) continue
+    // Netscape format: domain \t flag \t path \t secure \t expires \t name \t value
+    const [domain, _flag, path, secure, expires, name, ...valueParts] = parts
+    const value = valueParts.join('\t') // value itself might contain tabs (rare)
+    if (!name || !domain) continue
+    const exp = parseInt(expires, 10)
+    cookies.push({
+      name,
+      value,
+      domain,
+      path: path || '/',
+      secure: secure?.toUpperCase() === 'TRUE',
+      httpOnly: false,
+      sameSite: config.playwrightCookiesSameSite,
+      expires: Number.isFinite(exp) && exp > 0 ? exp : undefined,
+    })
+  }
+  return cookies
+}
+
+function normalizeCookie(c: any): PlaywrightCookie {
+  return {
+    name: c.name,
+    value: c.value,
+    domain: c.domain,
+    path: c.path || '/',
+    httpOnly: c.httpOnly || false,
+    secure: c.secure || false,
+    sameSite: ['Strict', 'Lax', 'None'].includes(c.sameSite)
+      ? c.sameSite
+      : config.playwrightCookiesSameSite,
+    expires: typeof c.expires === 'number' && c.expires > 0 ? c.expires : undefined,
+  }
+}
+
 async function loadCookies(context: BrowserContext, cookiesFile: string) {
   try {
     const fs = await import('node:fs/promises')
-    const data = await fs.readFile(cookiesFile, 'utf-8')
-    const cookies = JSON.parse(data)
-    if (Array.isArray(cookies) && cookies.length > 0) {
-      await context.addCookies(
-        cookies.map((c: any) => ({
-          name: c.name,
-          value: c.value,
-          domain: c.domain,
-          path: c.path || '/',
-          httpOnly: c.httpOnly || false,
-          secure: c.secure || false,
-          sameSite: c.sameSite || 'Lax',
-          expires: c.expires,
-        }))
+    const path = await import('node:path')
+    const resolved = path.isAbsolute(cookiesFile) ? cookiesFile : path.resolve(process.cwd(), cookiesFile)
+
+    try {
+      await fs.access(resolved)
+    } catch {
+      console.warn(
+        `[playwright] PLAYWRIGHT_COOKIES_FILE is set to "${cookiesFile}" (resolved: ${resolved}) but that file does not exist. ` +
+          `Downloads will proceed WITHOUT cookies. Mount the file into the container or check the path.`
       )
+      return
+    }
+
+    const data = await fs.readFile(resolved, 'utf-8')
+
+    let cookies: PlaywrightCookie[]
+    if (looksLikeNetscapeCookies(data)) {
+      console.log(`[playwright] detected Netscape cookies.txt at ${resolved}, converting to JSON`)
+      cookies = parseNetscapeCookies(data)
+    } else {
+      const parsed = JSON.parse(data)
+      cookies = Array.isArray(parsed) ? parsed.map(normalizeCookie) : []
+    }
+
+    if (cookies.length > 0) {
+      await context.addCookies(cookies)
+      console.log(`[playwright] loaded ${cookies.length} cookie(s) from ${resolved}`)
+    } else {
+      console.warn(`[playwright] cookie file ${resolved} contained no usable cookies`)
     }
   } catch (err) {
     console.warn(`[playwright] failed to load cookies from ${cookiesFile}:`, (err as Error).message)
