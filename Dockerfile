@@ -5,6 +5,23 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     curl \
+    # Playwright / Chromium system deps
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    libatspi2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --break-system-packages yt-dlp || pip3 install yt-dlp
@@ -18,6 +35,8 @@ COPY backend/package*.json ./backend/
 COPY frontend/package*.json ./frontend/
 
 RUN npm install
+# Install Playwright Chromium for fallback extraction on adult/JS-heavy sites
+RUN cd backend && npx playwright install chromium && npx playwright install-deps chromium || true
 
 COPY . .
 

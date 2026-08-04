@@ -104,40 +104,61 @@ npm start
 | `YTDLP_COOKIES_FILE` | No | Path to a Netscape cookies.txt |
 | `YTDLP_REFERER` | No | Force a Referer header |
 | `YTDLP_CUSTOM_ARGS` | No | Extra args passed to yt-dlp |
+| `PLAYWRIGHT_FALLBACK_ENABLED` | No | Browser fallback when yt-dlp fails on adult/JS sites (default `true`) |
+| `PLAYWRIGHT_FALLBACK_SITES` | No | Hostname regex for fallback (default covers major adult sites) |
+| `PLAYWRIGHT_HEADLESS` | No | Run Chromium headless (default `true`) |
+| `PLAYWRIGHT_TIMEOUT_MS` | No | Page load timeout (default `30000`) |
+| `PLAYWRIGHT_STEALTH` | No | Use playwright-extra stealth plugin if installed |
+| `PLAYWRIGHT_PROXY_SERVER` | No | Proxy for Chromium, e.g. `socks5://localhost:1080` |
+| `PLAYWRIGHT_COOKIES_FILE` | No | Path to cookies JSON for Chromium |
+| `PLAYWRIGHT_EXTRA_ARGS` | No | Extra Chromium launch flags |
 
 ## Adult sites (RedTube, PornHub, XVideos, etc.)
 
-yt-dlp supports these sites, but they often require extra handling:
+TubeVault has **two layers** for these sites:
+
+1. **yt-dlp direct extraction** — fastest, works for most sites.
+2. **Playwright browser fallback** — launches Chromium, intercepts the page's network traffic, grabs the actual `.m3u8` / `.mp4` / `.ts` manifest URL, and feeds it back to `yt-dlp` with proper `Referer` / `Origin` headers.
+
+The fallback triggers automatically when yt-dlp fails on a domain matching `PLAYWRIGHT_FALLBACK_SITES`.
+
+### Tips for adult sites
 
 1. **Keep yt-dlp up to date.** TubeVault runs `yt-dlp -U` on startup by default. Site extractors break frequently.
-2. **Use a real user-agent.** Add to `.env`:
-   ```bash
-   YTDLP_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-   ```
-3. **Pass cookies if age-gated.** `YTDLP_COOKIES_FROM_BROWSER` doesn't apply in Docker (no
-   browser profile inside the container). Use a cookies.txt file instead:
+2. **Cookies / age gate.** `YTDLP_COOKIES_FROM_BROWSER` doesn't apply in Docker (no browser profile inside the container). Use a cookies.txt file instead:
    ```bash
    # Drop your exported Netscape-format cookies.txt at ./data/cookies.txt on the host
    # (the ./data volume is already mounted to /app/data), then set the CONTAINER path:
    YTDLP_COOKIES_FILE=/app/data/cookies.txt
+   # For the Playwright fallback you can also pass a Playwright-compatible cookies JSON:
+   PLAYWRIGHT_COOKIES_FILE=/app/data/cookies.json
    ```
-   A relative path (`./cookies.txt`) will NOT work — yt-dlp resolves it against the
-   backend process's cwd (`/app/backend`), not your host directory, and silently
-   downloads unauthenticated if the file isn't found there — no error, same failure
-   as no cookies at all. The backend now logs a startup warning if the configured
-   path doesn't exist inside the container.
-4. **Cloud/VPS IP blocks.** Many adult sites block datacenter IPs. If downloads fail with HTTP 403 or "unable to extract", run TubeVault from a residential connection or proxy `yt-dlp` traffic.
-5. **Debug a URL quickly.** SSH into the container/server and run:
+   A relative path (`./cookies.txt`) will NOT work — yt-dlp resolves it against the backend process's cwd (`/app/backend`), not your host directory, and silently downloads unauthenticated if the file isn't found there — no error, same failure as no cookies at all. The backend now logs a startup warning if the configured path doesn't exist inside the container.
+3. **Cloud/VPS IP blocks.** Many adult sites block datacenter IPs. The browser fallback may still be blocked at the TCP/IP layer. Options:
+   - Run TubeVault from a residential connection.
+   - Route Playwright through a proxy:
+     ```bash
+     PLAYWRIGHT_PROXY_SERVER=socks5://user:pass@host:1080
+     ```
+   - Set the same proxy at the OS/container level for yt-dlp.
+4. **Debug a URL quickly.** SSH into the container/server and run:
    ```bash
    yt-dlp --dump-single-json --cookies-from-browser firefox "https://..."
+   # If that fails, test the fallback directly:
+   npx tsx -e "(await import('./backend/src/playwrightFallback.ts')).extractMediaUrls('https://...').then(console.log)"
    ```
-   Once that works, paste the same URL into TubeVault.
+   Once either path works, paste the URL into TubeVault.
 
 ```
 Frontend (React + Vite)  ──▶  Backend (Express + TypeScript)
                                      │
                                      ▼
-                              yt-dlp + ffmpeg
+                         ┌──────────────────────┐
+                         │ yt-dlp direct        │
+                         │ or                   │
+                         │ Playwright fallback  │
+                         │ (Chromium intercept) │
+                         └──────────────────────┘
                                      │
                                      ▼
                          Supabase Storage  or  Cloudflare R2

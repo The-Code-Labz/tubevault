@@ -69,6 +69,19 @@ export const config = {
   ytDlpCookiesFile: process.env.YTDLP_COOKIES_FILE || '',
   ytDlpReferer: process.env.YTDLP_REFERER || '',
   ytDlpCustomArgs: parseCustomArgs(process.env.YTDLP_CUSTOM_ARGS),
+
+  // Playwright fallback for adult / JS-heavy / HLS sites
+  // When yt-dlp fails on these domains, TubeVault launches Chromium, intercepts network traffic,
+  // grabs the .m3u8 / .mp4 / .ts manifest URL, and feeds it back to yt-dlp with proper headers.
+  playwrightFallbackEnabled: process.env.PLAYWRIGHT_FALLBACK_ENABLED !== 'false',
+  playwrightFallbackSites: process.env.PLAYWRIGHT_FALLBACK_SITES || 'redtube|pornhub|xvideos|xhamster|spankbang|youporn|camwhores|eporner|xnxx',
+  playwrightHeadless: process.env.PLAYWRIGHT_HEADLESS !== 'false',
+  playwrightTimeoutMs: parseInt(process.env.PLAYWRIGHT_TIMEOUT_MS || '30000', 10),
+  playwrightStealth: process.env.PLAYWRIGHT_STEALTH === 'true',
+  playwrightUserAgent: process.env.PLAYWRIGHT_USER_AGENT || '',
+  playwrightProxyServer: process.env.PLAYWRIGHT_PROXY_SERVER || '',
+  playwrightCookiesFile: process.env.PLAYWRIGHT_COOKIES_FILE || '',
+  playwrightExtraArgs: parseCustomArgs(process.env.PLAYWRIGHT_EXTRA_ARGS),
 }
 
 export function validateConfig() {

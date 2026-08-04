@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { config } from './config.js'
 import { db } from './db.js'
 import { createStorageProvider } from './storage.js'
+import { extractMediaUrls } from './playwrightFallback.js'
 import type { StorageBackend, Video } from './types.js'
 
 const activeJobs = new Map<string, { controller: AbortController; child?: ReturnType<typeof spawn> }>()
@@ -249,64 +250,52 @@ async function processDownload(
     await mkdir(workDir, { recursive: true })
     await db.update(id, { status: 'downloading', progress: 0 })
 
-    const metadata = await fetchMetadata(url, controller.signal)
-    await db.update(id, {
-      title: metadata.title,
-      duration: metadata.duration ?? null,
-      thumbnailUrl: metadata.thumbnail || null,
-    })
+    let title = 'untitled'
+    let thumbnailUrl: string | null = null
+    let duration: number | null = null
 
-    // Adult and HLS-heavy sites often don't expose separate audio/video MP4 streams.
-    // Fallback chain: bestvideo+bestaudio merged → best single file → worst (last resort).
-    const formatSelector =
-      config.ytDlpFormat ||
-      'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best/best*[ext=mp4]/worst'
+    try {
+      const metadata = await fetchMetadata(url, controller.signal)
+      title = metadata.title
+      duration = metadata.duration ?? null
+      thumbnailUrl = metadata.thumbnail || null
+      await db.update(id, { title, duration, thumbnailUrl })
+    } catch (metaErr: any) {
+      console.warn(`[downloader] metadata fetch failed: ${metaErr.message}`)
+      if (!shouldTryPlaywrightFallback(url, metaErr.message)) {
+        throw metaErr
+      }
+    }
 
-    const args = [
-      ...buildBaseArgs(),
-      '-f', formatSelector,
-      '--merge-output-format', 'mp4',
-      '--remux-video', 'mp4',
-      '--max-filesize', String(config.maxFileSizeBytes),
-      '--output', outTemplate,
-      url,
-    ]
+    const onProgress = (line: string) => {
+      const progress = parseProgress(line)
+      if (progress <= 0) return
+      const now = Date.now()
+      const last = lastProgressWrite.get(id) || 0
+      if (now - last < PROGRESS_WRITE_INTERVAL_MS) return
+      lastProgressWrite.set(id, now)
+      db.update(id, { progress: Math.min(Math.round(progress), 99) }).catch(console.error)
+    }
 
-    await runYtDlp(args, {
-      signal: controller.signal,
-      onProgress: (line) => {
-        const progress = parseProgress(line)
-        if (progress <= 0) return
-        const now = Date.now()
-        const last = lastProgressWrite.get(id) || 0
-        if (now - last < PROGRESS_WRITE_INTERVAL_MS) return
-        lastProgressWrite.set(id, now)
-        db.update(id, { progress: Math.min(Math.round(progress), 99) }).catch(console.error)
-      },
-    })
-
-    const entries = (await readdir(workDir)).map((name) => join(workDir, name))
-    const fileStats = await Promise.all(
-      entries.map(async (path) => {
-        try {
-          const s = await stat(path)
-          return { path, isFile: s.isFile(), size: s.size }
-        } catch {
-          return { path, isFile: false, size: 0 }
-        }
-      })
-    )
-    const candidates = fileStats
-      .filter((f) => f.isFile && !f.path.endsWith('.json') && !f.path.endsWith('.txt') && !f.path.endsWith('.nfo'))
-      .sort((a, b) => b.size - a.size)
-
-    const videoFile =
-      candidates.find((f) => f.path.endsWith('.mp4'))?.path ||
-      candidates.find((f) => ['.mp4', '.webm', '.mkv', '.mov'].includes(extname(f.path).toLowerCase()))?.path ||
-      candidates[0]?.path
-
-    if (!videoFile) {
-      throw new Error('Download completed but no video file found')
+    let videoFile: string
+    try {
+      videoFile = await downloadWithYtDlp(url, workDir, outTemplate, controller.signal, onProgress)
+    } catch (dlErr: any) {
+      if (!shouldTryPlaywrightFallback(url, dlErr.message)) {
+        throw dlErr
+      }
+      const fallback = await downloadWithPlaywrightFallback(
+        url,
+        workDir,
+        outTemplate,
+        controller.signal,
+        onProgress
+      )
+      videoFile = fallback.videoFile
+      if (title === 'untitled') {
+        title = fallback.title
+        await db.update(id, { title })
+      }
     }
 
     const videoStat = await stat(videoFile)
@@ -316,7 +305,7 @@ async function processDownload(
 
     await db.update(id, { status: 'uploading', progress: 99 })
 
-    const safeTitle = sanitizeFilename(metadata.title)
+    const safeTitle = sanitizeFilename(title)
     const storageKey = `tubevault/${id}/${safeTitle}.mp4`
 
     const provider = await createStorageProvider(backend)
@@ -342,6 +331,144 @@ async function processDownload(
       console.error(`Failed to cleanup ${workDir}:`, cleanupErr)
     }
   }
+}
+
+async function downloadWithYtDlp(
+  url: string,
+  workDir: string,
+  outTemplate: string,
+  signal: AbortSignal,
+  onProgress?: (line: string) => void
+): Promise<string> {
+  const formatSelector =
+    config.ytDlpFormat ||
+    'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best/best*[ext=mp4]/worst'
+
+  const args = [
+    ...buildBaseArgs(),
+    '-f', formatSelector,
+    '--merge-output-format', 'mp4',
+    '--remux-video', 'mp4',
+    '--max-filesize', String(config.maxFileSizeBytes),
+    '--output', outTemplate,
+    url,
+  ]
+
+  await runYtDlp(args, { signal, onProgress })
+
+  const entries = (await readdir(workDir)).map((name) => join(workDir, name))
+  const fileStats = await Promise.all(
+    entries.map(async (path) => {
+      try {
+        const s = await stat(path)
+        return { path, isFile: s.isFile(), size: s.size }
+      } catch {
+        return { path, isFile: false, size: 0 }
+      }
+    })
+  )
+  const candidates = fileStats
+    .filter((f) => f.isFile && !f.path.endsWith('.json') && !f.path.endsWith('.txt') && !f.path.endsWith('.nfo'))
+    .sort((a, b) => b.size - a.size)
+
+  const videoFile =
+    candidates.find((f) => f.path.endsWith('.mp4'))?.path ||
+    candidates.find((f) => ['.mp4', '.webm', '.mkv', '.mov'].includes(extname(f.path).toLowerCase()))?.path ||
+    candidates[0]?.path
+
+  if (!videoFile) {
+    throw new Error('Download completed but no video file found')
+  }
+
+  return videoFile
+}
+
+function shouldTryPlaywrightFallback(url: string, errorMessage: string): boolean {
+  if (!config.playwrightFallbackEnabled) return false
+  try {
+    const regex = new RegExp(config.playwrightFallbackSites, 'i')
+    if (!regex.test(new URL(url).hostname)) return false
+  } catch {
+    return false
+  }
+  // Only fall back on extraction / network / HTTP errors, not on local disk errors
+  const retryable = /extractor|unable to download|HTTP Error|403|404|blocked|unsupported|sign in|age|verify/i
+  return retryable.test(errorMessage)
+}
+
+async function downloadWithPlaywrightFallback(
+  pageUrl: string,
+  workDir: string,
+  outTemplate: string,
+  signal: AbortSignal,
+  onProgress?: (line: string) => void
+): Promise<{ videoFile: string; title: string }> {
+  console.log(`[downloader] yt-dlp failed on ${pageUrl}; trying Playwright fallback`)
+  const candidates = await extractMediaUrls(pageUrl, signal)
+  if (candidates.length === 0) {
+    throw new Error('yt-dlp failed and Playwright fallback found no media URLs')
+  }
+
+  const hostname = new URL(pageUrl).hostname
+  const referer = `https://${hostname}/`
+
+  for (const candidate of candidates.slice(0, 3)) {
+    if (signal.aborted) throw new Error('Download aborted')
+
+    console.log(`[downloader] trying fallback candidate: ${candidate.url.slice(0, 150)}`)
+
+    const extraArgs: string[] = [
+      '--add-header', `Referer:${referer}`,
+      '--add-header', `Origin:${referer}`,
+    ]
+    if (config.ytDlpUserAgent) {
+      extraArgs.push('--user-agent', config.ytDlpUserAgent)
+    }
+
+    try {
+      const args = [
+        '--no-playlist',
+        '--newline',
+        ...extraArgs,
+        '-f', 'bestvideo*+bestaudio/bestvideo+bestaudio/best/best*[ext=mp4]/worst',
+        '--merge-output-format', 'mp4',
+        '--remux-video', 'mp4',
+        '--max-filesize', String(config.maxFileSizeBytes),
+        '--output', outTemplate,
+        candidate.url,
+      ]
+      await runYtDlp(args, { signal, onProgress })
+
+      const entries = (await readdir(workDir)).map((name) => join(workDir, name))
+      const fileStats = await Promise.all(
+        entries.map(async (path) => {
+          try {
+            const s = await stat(path)
+            return { path, isFile: s.isFile(), size: s.size }
+          } catch {
+            return { path, isFile: false, size: 0 }
+          }
+        })
+      )
+      const candidates2 = fileStats
+        .filter((f) => f.isFile && !f.path.endsWith('.json') && !f.path.endsWith('.txt') && !f.path.endsWith('.nfo'))
+        .sort((a, b) => b.size - a.size)
+
+      const videoFile =
+        candidates2.find((f) => f.path.endsWith('.mp4'))?.path ||
+        candidates2.find((f) => ['.mp4', '.webm', '.mkv', '.mov'].includes(extname(f.path).toLowerCase()))?.path ||
+        candidates2[0]?.path
+
+      if (videoFile) {
+        return { videoFile, title: `Video from ${hostname}` }
+      }
+    } catch (err: any) {
+      console.warn(`[downloader] fallback candidate failed: ${err.message}`)
+      continue
+    }
+  }
+
+  throw new Error('Playwright fallback found candidates but none could be downloaded')
 }
 
 export async function cancelDownload(id: string, userId: string): Promise<boolean> {
