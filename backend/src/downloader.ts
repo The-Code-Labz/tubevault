@@ -8,7 +8,8 @@ import { v4 as uuidv4 } from 'uuid'
 import { config } from './config.js'
 import { db } from './db.js'
 import { createStorageProvider } from './storage.js'
-import { extractMediaUrls } from './playwrightFallback.js'
+import { extractMediaUrls, buildCookieHeader } from './playwrightFallback.js'
+import type { Cookie } from 'playwright'
 import type { StorageBackend, Video } from './types.js'
 
 const activeJobs = new Map<string, { controller: AbortController; child?: ReturnType<typeof spawn> }>()
@@ -523,12 +524,23 @@ async function downloadDirectMedia(
   outputPath: string,
   headers: Record<string, string>,
   signal: AbortSignal,
-  onProgress?: (line: string) => void
+  onProgress?: (line: string) => void,
+  cookies?: Cookie[]
 ): Promise<void> {
   console.log(`[downloader] direct-downloading media from ${url.slice(0, 120)}...`)
+
+  const finalHeaders: Record<string, string> = { ...headers }
+  if (cookies && cookies.length > 0) {
+    const cookieHeader = buildCookieHeader(cookies, url)
+    if (cookieHeader) {
+      finalHeaders['Cookie'] = cookieHeader
+      console.log(`[downloader] sending ${cookies.length} cookie(s) with request`)
+    }
+  }
+
   const response = await fetch(url, {
     method: 'GET',
-    headers,
+    headers: finalHeaders,
     signal,
   })
 
@@ -585,7 +597,7 @@ async function downloadWithPlaywrightFallback(
   onProgress?: (line: string) => void
 ): Promise<{ videoFile: string; title: string }> {
   console.log(`[downloader] yt-dlp failed on ${pageUrl}; trying Playwright fallback`)
-  const candidates = await extractMediaUrls(pageUrl, signal)
+  const { candidates, cookies, title: pageTitle } = await extractMediaUrls(pageUrl, signal)
   if (candidates.length === 0) {
     throw new Error('yt-dlp failed and Playwright fallback found no media URLs')
   }
@@ -593,7 +605,7 @@ async function downloadWithPlaywrightFallback(
   const hostname = new URL(pageUrl).hostname
   const referer = `https://${hostname}/`
 
-  for (const candidate of candidates.slice(0, 5)) {
+  for (const candidate of candidates.slice(0, 8)) {
     if (signal.aborted) throw new Error('Download aborted')
 
     console.log(`[downloader] trying fallback candidate: ${candidate.url.slice(0, 150)}`)
@@ -611,8 +623,19 @@ async function downloadWithPlaywrightFallback(
         const ext = extname(new URL(candidate.url).pathname).toLowerCase() || '.mp4'
         const safeExt = ['.mp4', '.webm', '.mov', '.mkv', '.m4v'].includes(ext) ? ext : '.mp4'
         const outputPath = outTemplate.replace('%(ext)s', safeExt.replace('.', ''))
-        await downloadDirectMedia(candidate.url, outputPath, headers, signal, onProgress)
-        return { videoFile: outputPath, title: `Video from ${hostname}` }
+        await downloadDirectMedia(candidate.url, outputPath, headers, signal, onProgress, cookies)
+
+        // Reject obvious preview/age-gate videos: extremely short or tiny.
+        const stats = await stat(outputPath)
+        if (stats.size < 200_000) {
+          console.warn(`[downloader] candidate file too small (${stats.size} bytes); likely preview/age-gate, trying next`)
+          continue
+        }
+
+        return {
+          videoFile: outputPath,
+          title: pageTitle || `Video from ${hostname}`,
+        }
       }
 
       // For HLS/DASH manifests, keep using yt-dlp (it handles fragment fetching).
@@ -660,7 +683,7 @@ async function downloadWithPlaywrightFallback(
         candidates2[0]?.path
 
       if (videoFile) {
-        return { videoFile, title: `Video from ${hostname}` }
+        return { videoFile, title: pageTitle || `Video from ${hostname}` }
       }
     } catch (err: any) {
       console.warn(`[downloader] fallback candidate failed: ${err.message}`)

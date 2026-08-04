@@ -129,14 +129,14 @@ npm start
 TubeVault has **two layers** for these sites:
 
 1. **yt-dlp direct extraction** — fastest, works for most sites.
-2. **Playwright browser fallback** — launches Chromium, intercepts the page's network traffic, grabs the actual `.m3u8` / `.mp4` / `.ts` manifest URL, and feeds it back to `yt-dlp` with proper `Referer` / `Origin` headers.
+2. **Playwright browser fallback** — launches Chromium, dismisses the age gate, intercepts the page's network traffic, extracts the real video URL from the DOM **and** from inline JS player configs, then downloads it directly with the same cookies/headers the browser used.
 
 The fallback triggers automatically when yt-dlp fails on a domain matching `PLAYWRIGHT_FALLBACK_SITES`.
 
 ### Tips for adult sites
 
 1. **Keep yt-dlp up to date.** TubeVault runs `yt-dlp -U` on startup by default. Site extractors break frequently.
-2. **Cookies / age gate.** `YTDLP_COOKIES_FROM_BROWSER` doesn't apply in Docker (no browser profile inside the container). Use a cookies file instead. TubeVault accepts **both** Netscape `cookies.txt` and JSON-array cookie exports:
+2. **Cookies / age gate.** The Playwright fallback now tries to click common age-gate buttons automatically. If it still downloads a short "age verification" preview, the cookies you exported probably don't include the age-verified token. Export cookies **after** you have clicked "Enter / I am 18" in your browser:
    ```bash
    # Drop your exported cookies at ./data/cookies.txt (or ./data/cookies.json) on the host
    # (the ./data volume is already mounted to /app/data), then set the CONTAINER path:
@@ -157,9 +157,10 @@ The fallback triggers automatically when yt-dlp fails on a domain matching `PLAY
    ```bash
    yt-dlp --dump-single-json --cookies-from-browser firefox "https://..."
    # If that fails, test the fallback directly:
-   npx tsx -e "(await import('./backend/src/playwrightFallback.ts')).extractMediaUrls('https://...').then(console.log)"
+   npx tsx -e "(await import('./backend/src/playwrightFallback.ts')).extractMediaUrls('https://...').then(r => console.log(r.candidates, r.title))"
    ```
    Once either path works, paste the URL into TubeVault.
+5. **Preview / age-gate video still downloads?** Check the file size in the UI. If it's under ~200 KB, TubeVault rejects it as a preview and tries the next candidate. If no candidate is large enough, your cookies are missing the age-verified token — re-export them after clicking through the gate in your browser.
 
 ```
 Frontend (React + Vite)  ──▶  Backend (Express + TypeScript)
