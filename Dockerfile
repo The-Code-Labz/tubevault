@@ -26,7 +26,10 @@ COPY . .
 # backend/src/index.ts), so no build-args/CI secrets are needed. Just set them
 # in .env like every other variable.
 RUN npm run build
-RUN cp -r frontend/dist backend/public
+# backend/public/.gitkeep is tracked so the dir pre-exists at COPY-time — `cp -r
+# frontend/dist backend/public` would then nest into backend/public/dist/* instead
+# of copying its contents directly. Clear it first so the copy lands flat.
+RUN rm -rf backend/public && cp -r frontend/dist backend/public
 
 ENV NODE_ENV=production
 ENV PORT=4050
