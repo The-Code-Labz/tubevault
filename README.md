@@ -4,10 +4,10 @@ A self-hosted, universal video downloader web app. Paste almost any video URL (Y
 
 ## Features
 
-- **Authentication** via Supabase Auth — every API route (except `/api/health`) requires a signed-in user, and each user only sees/manages their own videos
+- **Invite-only authentication** via Supabase Auth — every API route (except `/api/health`) requires a signed-in user, self-signup is disabled, and each user only sees/manages their own videos
 - **Universal downloads** via `yt-dlp` + `ffmpeg`
 - **Storage choice:** Supabase Storage or Cloudflare R2
-- **Web UI** to sign in/up, submit URLs, track progress, stream, and delete videos
+- **Web UI** to sign in, submit URLs, track progress, stream, and delete videos
 - **Real-time progress** polling (queued → downloading → uploading → complete/failed)
 - **Docker + Docker Compose** ready
 - **Systemd** service file included
@@ -41,6 +41,21 @@ Authentication is required and backed by [Supabase Auth](https://supabase.com/do
 
 All three are read at container **runtime** — the frontend fetches `SUPABASE_URL`/`SUPABASE_ANON_KEY` from the backend on load (`GET /api/config`), so nothing is baked into the image at build time. Just edit `.env` and restart the container to change or rotate them; no rebuild required.
 
+### Invite-only setup
+
+This vault has no public self-signup. There are two parts to that, and only one of them is the actual enforcement boundary:
+
+1. **The real boundary — disable signup in Supabase itself.** In your Supabase dashboard: **Authentication → Providers → Email**, turn **off** "Allow new users to sign up". This is required. The frontend no longer has a sign-up form and the backend's own routes don't create users, but the `SUPABASE_ANON_KEY` is a public browser key by design — anyone with it can call Supabase's own `/auth/v1/signup` REST endpoint directly, bypassing TubeVault entirely, unless this dashboard toggle is off. The app-level changes below are defense-in-depth/UX, not a substitute for this.
+2. **Set `ADMIN_API_KEY`** in `.env` to a long random value (e.g. `openssl rand -hex 32`). The server refuses to start without it.
+3. **Invite a user** by calling the admin endpoint (never exposed to the frontend):
+   ```bash
+   curl -X POST https://<host>/api/admin/invite \
+     -H "X-Admin-Key: $ADMIN_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"email":"user@example.com"}'
+   ```
+   Supabase emails the invitee a link to set their own password; after that they sign in normally at the TubeVault URL.
+
 **Storage bucket:** if `STORAGE_BACKEND=supabase` (the default), the backend creates `SUPABASE_BUCKET` (default `videos`) automatically on first boot, **as a private bucket**. Video files are never given a permanent public URL — `GET /api/videos/:id/stream` mints a fresh short-lived [signed URL](https://supabase.com/docs/guides/storage/serving/downloads#signed-urls) (default 1 hour TTL, override with `SUPABASE_SIGNED_URL_TTL_SECONDS`) on every authenticated, ownership-checked request instead. Nothing is cached or stored server-side.
 
 > **Upgrading from an older TubeVault** (pre-signed-URL fix): earlier versions created this bucket with `public: true`, meaning anyone who obtained/guessed an object key could pull the video directly with no auth. On startup, the backend now detects an existing public bucket and automatically flips it to private via `updateBucket()` (yes — despite some older docs implying otherwise, the Supabase JS client **can** toggle a bucket's public/private flag after creation; no dashboard visit required). This stops new unsigned access immediately. It does **not** retroactively revoke URLs that were already shared, cached by a browser/proxy, or crawled before the flip — if you suspect any object keys leaked while the bucket was public, re-upload those videos (new storage key) or delete + redownload them.
@@ -72,7 +87,8 @@ npm start
 | `SUPABASE_SERVICE_KEY` | **Yes** | Service role key (backend-only, never expose client-side) |
 | `SUPABASE_BUCKET` | No | Bucket name (default `videos`). Created **private**; auto-migrated to private if it already exists as public |
 | `SUPABASE_SIGNED_URL_TTL_SECONDS` | No | TTL for signed stream URLs handed out by `GET /api/videos/:id/stream` (default `3600` = 1 hour, min `60`) |
-| `SUPABASE_ANON_KEY` | **Yes** | Public anon key — served to the frontend at runtime via `GET /api/config`, used by the browser to sign in/up |
+| `SUPABASE_ANON_KEY` | **Yes** | Public anon key — served to the frontend at runtime via `GET /api/config`, used by the browser to sign in |
+| `ADMIN_API_KEY` | **Yes** | Shared secret required in the `X-Admin-Key` header for `POST /api/admin/invite`. Server refuses to boot without it. See "Invite-only setup" below |
 | `R2_ENDPOINT` | If R2 | S3 endpoint |
 | `R2_ACCESS_KEY_ID` | If R2 | Access key |
 | `R2_SECRET_ACCESS_KEY` | If R2 | Secret key |
@@ -135,6 +151,8 @@ All routes below except `/api/health` require `Authorization: Bearer <supabase-a
 | DELETE | `/api/videos/:id` | Delete video + storage object |
 | POST | `/api/videos/:id/cancel` | Cancel an in-flight download |
 
+`POST /api/admin/invite` is a separate admin-only route, gated by the `X-Admin-Key` header instead of a Supabase session — see "Invite-only setup" below.
+
 ## CORS / production
 
 By default the API sends no CORS headers (same-origin only). If the frontend is served from a different origin than the API, set `ALLOWED_ORIGIN` (comma-separated) and `VITE_API_BASE_URL` in the frontend build.
@@ -145,6 +163,7 @@ By default the API sends no CORS headers (same-origin only). If the frontend is 
 - Download URLs are checked against a best-effort SSRF allowlist (blocks loopback/private/link-local/cloud-metadata address ranges) before being handed to `yt-dlp`. This resolves DNS once at validation time — it reduces but does not eliminate DNS-rebinding risk, so still run this behind network egress restrictions if downloading from untrusted URLs matters to your threat model.
 - The Supabase Storage bucket is private (never `public: true`); video URLs are short-lived signed URLs minted per authenticated, ownership-checked request — never permanent/unsigned. See "Storage bucket" above for the auto-migration behavior on existing deployments.
 - Keep your service keys in `.env` only — never commit them. `SUPABASE_ANON_KEY` is the one exception meant to be public (it's the browser client key, served via `GET /api/config`).
+- Self-signup is disabled: the frontend has no sign-up form, and `/api/admin/invite` (gated by `ADMIN_API_KEY` via `X-Admin-Key`) is the only way to onboard a user, kept isolated from `/api/videos*`. This is still UX/defense-in-depth — the actual enforcement boundary is the "Allow new users to sign up" toggle in Supabase's dashboard (Authentication → Providers → Email); see "Invite-only setup" above.
 - R2 storage is unaffected by this: R2 objects are still served via a plain CDN/public-dev URL (`R2_PUBLIC_URL` or the R2 endpoint), matching how R2 buckets are normally fronted. If that's not an acceptable threat model for your R2 bucket's contents, put access control in front of it yourself (e.g. Cloudflare Access, a signed-URL Worker) or use `STORAGE_BACKEND=supabase`.
 
 ## License

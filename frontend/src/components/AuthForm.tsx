@@ -3,28 +3,21 @@ import { Film, Loader2 } from 'lucide-react'
 import { useAuth } from '../lib/auth-context.tsx'
 
 export function AuthForm() {
-  const { signIn, signUp } = useAuth()
-  const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in')
+  const { signIn } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [info, setInfo] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
-    setInfo(null)
     setSubmitting(true)
-    const result = mode === 'sign-in' ? await signIn(email, password) : await signUp(email, password)
+    const result = await signIn(email, password)
     setSubmitting(false)
 
     if (result) {
       setError(result)
-      return
-    }
-    if (mode === 'sign-up') {
-      setInfo('Account created. Check your email to confirm, then sign in.')
     }
   }
 
@@ -38,35 +31,14 @@ export function AuthForm() {
           <h1 className="text-xl font-bold">TubeVault</h1>
         </div>
 
-        <div className="mb-6 flex rounded-lg border border-zinc-800 p-1 text-sm">
-          <button
-            type="button"
-            onClick={() => setMode('sign-in')}
-            className={`flex-1 rounded-md py-1.5 transition ${
-              mode === 'sign-in' ? 'bg-indigo-600 text-white' : 'text-zinc-400'
-            }`}
-          >
-            Sign in
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('sign-up')}
-            className={`flex-1 rounded-md py-1.5 transition ${
-              mode === 'sign-up' ? 'bg-indigo-600 text-white' : 'text-zinc-400'
-            }`}
-          >
-            Sign up
-          </button>
-        </div>
+        <p className="mb-6 text-sm text-zinc-400">
+          Invite-only. Sign in with the credentials you were given — this vault does not support
+          self-signup.
+        </p>
 
         {error ? (
           <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
             {error}
-          </div>
-        ) : null}
-        {info ? (
-          <div className="mb-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-400">
-            {info}
           </div>
         ) : null}
 
@@ -92,7 +64,7 @@ export function AuthForm() {
             <input
               id="password"
               type="password"
-              autoComplete={mode === 'sign-in' ? 'current-password' : 'new-password'}
+              autoComplete="current-password"
               required
               minLength={6}
               value={password}
@@ -106,7 +78,7 @@ export function AuthForm() {
             className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 font-medium text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? <Loader2 size={18} className="animate-spin" /> : null}
-            {mode === 'sign-in' ? 'Sign in' : 'Create account'}
+            Sign in
           </button>
         </form>
       </div>

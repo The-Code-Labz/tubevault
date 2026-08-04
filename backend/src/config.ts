@@ -39,6 +39,10 @@ export const config = {
   // Vite bundle at build time, so it can just be set in .env like everything else.
   supabaseAnonKey: process.env.SUPABASE_ANON_KEY || '',
 
+  // Shared secret required in the X-Admin-Key header for POST /api/admin/invite.
+  // Fail-closed: validateConfig() refuses to boot without this set.
+  adminApiKey: process.env.ADMIN_API_KEY || '',
+
   // Cloudflare R2 (S3-compatible)
   r2Endpoint: process.env.R2_ENDPOINT || '',
   r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || '',
@@ -72,6 +76,7 @@ export function validateConfig() {
   requireEnv('SUPABASE_URL')
   requireEnv('SUPABASE_SERVICE_KEY')
   requireEnv('SUPABASE_ANON_KEY')
+  requireEnv('ADMIN_API_KEY')
 
   if (config.storageBackend === 'r2') {
     if (!config.r2Endpoint || !config.r2AccessKeyId || !config.r2SecretAccessKey) {

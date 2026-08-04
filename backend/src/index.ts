@@ -13,6 +13,7 @@ import {
 } from './downloader.js'
 import { z } from 'zod'
 import { requireAuth, type AuthedRequest } from './auth.js'
+import { adminRouter } from './admin.js'
 import { assertSafeDownloadUrl } from './url-safety.js'
 import type { StorageBackend } from './types.js'
 
@@ -56,6 +57,10 @@ app.get('/api/config', (_req, res) => {
     supabaseAnonKey: config.supabaseAnonKey,
   })
 })
+
+// Admin-only invite endpoint, gated by X-Admin-Key (ADMIN_API_KEY). Deliberately
+// isolated from requireAuth/the /api/videos surface below — see admin.ts.
+app.use('/api/admin', adminRouter)
 
 // Every /api/videos* route requires a valid Supabase session.
 app.use('/api/videos', requireAuth)

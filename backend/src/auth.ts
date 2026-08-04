@@ -8,7 +8,8 @@ export interface AuthedRequest extends Request {
 
 let authClient: SupabaseClient | null = null
 
-function getAuthClient(): SupabaseClient {
+/** Shared Supabase client using the service-role key (server-side only). */
+export function getAuthClient(): SupabaseClient {
   if (!authClient) {
     authClient = createClient(config.supabaseUrl, config.supabaseServiceKey, {
       auth: { autoRefreshToken: false, persistSession: false },
