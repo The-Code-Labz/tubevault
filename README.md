@@ -167,6 +167,22 @@ The fallback triggers automatically when yt-dlp fails on a domain matching `PLAY
    Once either path works, paste the URL into TubeVault.
 5. **Preview / age-gate video still downloads?** Check the file size in the UI. If it's under ~200 KB, TubeVault rejects it as a preview and tries the next candidate. If no candidate is large enough, your cookies are missing the age-verified token — re-export them after clicking through the gate in your browser.
 
+## Cookie sync (no manual re-export)
+
+Every yt-dlp/Playwright invocation is a fresh child process that reads `YTDLP_COOKIES_FILE`/`PLAYWRIGHT_COOKIES_FILE` straight off disk at spawn time — nothing in the backend caches cookie *content* in memory. Editing `./data/cookies.txt` on the host already takes effect on the **next** download with **no container restart needed**. The real friction was never "hot reload" — it was manually running Cookie-Editor and re-uploading the file every time a session expired.
+
+`POST /api/admin/cookies` (gated by the same `X-Admin-Key: $ADMIN_API_KEY` header as `/api/admin/invite`) closes that gap: it accepts a raw `chrome.cookies.getAll()` export and merges it into the cookies file, keyed by `(domain, name, path)` — syncing one site never wipes cookies you already have for another.
+
+```
+POST /api/admin/cookies
+X-Admin-Key: <ADMIN_API_KEY>
+Content-Type: application/json
+
+{ "cookies": [ { "name": "...", "value": "...", "domain": "...", "path": "/", ... }, ... ] }
+```
+
+The **TubeVault Cookie Sync** browser extension (`/extension`) is a one-click frontend for this: install it in your own browser, open a site you're logged into (YouTube, an age-verified site, etc.), click the toolbar icon → "Sync cookies for this site". It reads cookies from *your own authenticated tab* via the browser's `cookies` API and POSTs them straight to your TubeVault instance — see `extension/README.md` for install steps. Requires `YTDLP_COOKIES_FILE` (and/or `PLAYWRIGHT_COOKIES_FILE`) to be set on the server first; the endpoint returns 400 if neither is configured.
+
 ```
 Frontend (React + Vite)  ──▶  Backend (Express + TypeScript)
                                      │

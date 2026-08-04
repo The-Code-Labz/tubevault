@@ -58,9 +58,11 @@ app.get('/api/config', (_req, res) => {
   })
 })
 
-// Admin-only invite endpoint, gated by X-Admin-Key (ADMIN_API_KEY). Deliberately
-// isolated from requireAuth/the /api/videos surface below — see admin.ts.
-app.use('/api/admin', adminRouter)
+// Admin-only invite/cookie-sync endpoints, gated by X-Admin-Key (ADMIN_API_KEY).
+// Deliberately isolated from requireAuth/the /api/videos surface below — see admin.ts.
+// Larger body limit than the default 100kb: a full browser cookie export across
+// several logged-in sites can run a few hundred KB.
+app.use('/api/admin', express.json({ limit: '1mb' }), adminRouter)
 
 // Every /api/videos* route requires a valid Supabase session.
 app.use('/api/videos', requireAuth)

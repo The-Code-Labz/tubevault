@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "TubeVault Cookie Sync",
+  "version": "1.0.0",
+  "description": "Sync cookies from the current tab into your self-hosted TubeVault instance so yt-dlp/Playwright can access logged-in/age-verified sessions.",
+  "permissions": ["cookies", "storage", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Sync cookies to TubeVault"
+  },
+  "options_page": "options.html"
+}
