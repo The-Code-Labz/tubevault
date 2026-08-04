@@ -1,0 +1,25 @@
+version: '3.8'
+
+# Simple Docker Compose for machines without Traefik.
+# Usage:
+#   docker compose -f docker-compose.simple.yml up --build -d
+# Then open http://localhost:4050
+
+services:
+  tubevault:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tubevault
+    ports:
+      - "${PORT:-4050}:4050"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=${PORT:-4050}
+      - DOWNLOAD_DIR=${DOWNLOAD_DIR:-/app/data/downloads}
+      - DB_PATH=${DB_PATH:-/app/data/videos.json}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

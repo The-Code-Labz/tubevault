@@ -62,11 +62,21 @@ This vault has no public self-signup. There are two parts to that, and only one 
 
 ### 3. Run with Docker (recommended)
 
+`docker-compose.yml` builds locally from the included `Dockerfile` by default, so Chromium + Playwright deps are baked in and adult-site fallback works out of the box.
+
 ```bash
 docker compose up --build -d
 ```
 
 Open `http://localhost:4050`.
+
+If you don't use Traefik, use the simpler compose file instead:
+
+```bash
+docker compose -f docker-compose.simple.yml up --build -d
+```
+
+To use a prebuilt GHCR image instead of building locally, set `TUBEVAULT_IMAGE_TAG` in `.env` and comment out the `build:` block in `docker-compose.yml`.
 
 ### 4. Or run locally
 
