@@ -1,3 +1,26 @@
+@import url('https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body {
+    @apply bg-canvas text-paper;
+  }
+
+  dialog {
+    color: inherit;
+    max-width: none;
+    max-height: none;
+  }
+
+  dialog::backdrop {
+    background: transparent;
+  }
+}

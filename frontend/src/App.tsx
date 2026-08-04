@@ -1,33 +1,61 @@
 import { useEffect, useState } from 'react'
-import { Film, LogOut, Trash2 } from 'lucide-react'
 import { api } from './lib/api.ts'
-import { DownloadForm } from './components/DownloadForm.tsx'
-import { VideoCard } from './components/VideoCard.tsx'
-import { VideoPlayer } from './components/VideoPlayer.tsx'
-import { AuthForm } from './components/AuthForm.tsx'
 import { useAuth } from './lib/auth-context.tsx'
+import { isActiveStatus } from './lib/status.ts'
+import { AppHeader } from './components/AppHeader.tsx'
+import { AuthGate } from './components/AuthGate.tsx'
+import { LibrarySummary } from './components/LibrarySummary.tsx'
+import { IngestRail } from './components/IngestRail.tsx'
+import { LibraryFilters, FILTER_LABELS, type FilterKey } from './components/LibraryFilters.tsx'
+import { VideoTile } from './components/VideoTile.tsx'
+import { EmptyLibrary } from './components/EmptyLibrary.tsx'
+import { LibrarySkeleton } from './components/LibrarySkeleton.tsx'
+import { InlineAlert } from './components/InlineAlert.tsx'
+import { ConfirmDeleteDialog } from './components/ConfirmDeleteDialog.tsx'
+import { PlayerDialog } from './components/PlayerDialog.tsx'
 import type { DownloadRequest, Video } from './types.ts'
 
 export default function App() {
   const { session, loading: authLoading, signOut } = useAuth()
   const [videos, setVideos] = useState<Video[]>([])
-  const [loading, setLoading] = useState(true)
+  const [initialLoading, setInitialLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const [playing, setPlaying] = useState<Video | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [filter, setFilter] = useState<'all' | 'complete' | 'active' | 'failed'>('all')
+  const [confirmTarget, setConfirmTarget] = useState<Video | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [filter, setFilter] = useState<FilterKey>('all')
 
   async function loadVideos() {
     try {
       const data = await api.listVideos()
       setVideos(data)
-      setError(null)
+      setLoadError(null)
     } catch (err: any) {
-      setError(err.message)
+      setLoadError(err.message)
     } finally {
-      setLoading(false)
+      setInitialLoading(false)
     }
   }
+
+  const userId = session?.user?.id ?? null
+
+  // Clear all account-scoped UI state the moment the signed-in user changes
+  // (sign-out/sign-in as a different account) so the previous account's
+  // videos, filter, open player, or pending delete can never flash while the
+  // next account's data is still loading. Effects run in declaration order
+  // within a commit, so this always clears before the fetch effect below runs.
+  useEffect(() => {
+    setVideos([])
+    setInitialLoading(true)
+    setLoadError(null)
+    setSubmitError(null)
+    setFilter('all')
+    setPlaying(null)
+    setConfirmTarget(null)
+    setDeleteBusy(false)
+  }, [userId])
 
   useEffect(() => {
     if (!session) return
@@ -37,116 +65,123 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session])
 
-  async function handleDownload(req: DownloadRequest) {
+  async function handleSubmit(req: DownloadRequest): Promise<boolean> {
     setSubmitting(true)
+    setSubmitError(null)
     try {
       await api.createVideo(req)
       await loadVideos()
+      return true
     } catch (err: any) {
-      setError(err.message)
+      setSubmitError(err.message)
+      return false
     } finally {
       setSubmitting(false)
     }
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm('Delete this video and its stored file?')) return
+  async function handleConfirmDelete() {
+    if (!confirmTarget) return
+    setDeleteBusy(true)
     try {
-      await api.deleteVideo(id)
+      await api.deleteVideo(confirmTarget.id)
+      setConfirmTarget(null)
       await loadVideos()
     } catch (err: any) {
-      setError(err.message)
+      setLoadError(err.message)
+      setConfirmTarget(null)
+    } finally {
+      setDeleteBusy(false)
     }
   }
 
   if (authLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-zinc-500">
-        Loading...
+      <div className="flex min-h-[100dvh] items-center justify-center bg-canvas font-mono text-sm text-paper-muted">
+        Loading…
       </div>
     )
   }
 
   if (!session) {
-    return <AuthForm />
+    return <AuthGate />
+  }
+
+  const counts: Record<FilterKey, number> = {
+    all: videos.length,
+    active: videos.filter((v) => isActiveStatus(v.status)).length,
+    complete: videos.filter((v) => v.status === 'complete').length,
+    failed: videos.filter((v) => v.status === 'failed').length,
   }
 
   const filtered = videos.filter((v) => {
     if (filter === 'complete') return v.status === 'complete'
-    if (filter === 'active') return ['queued', 'downloading', 'processing', 'uploading'].includes(v.status)
+    if (filter === 'active') return isActiveStatus(v.status)
     if (filter === 'failed') return v.status === 'failed'
     return true
   })
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      <header className="border-b border-zinc-800 bg-zinc-900/50">
-        <div className="mx-auto flex max-w-7xl items-center gap-3 px-6 py-4">
-          <div className="rounded-lg bg-indigo-600 p-2">
-            <Film size={20} className="text-white" />
-          </div>
-          <h1 className="text-xl font-bold">TubeVault</h1>
-          <span className="ml-4 text-sm text-zinc-500">{session.user.email}</span>
-          <button
-            onClick={() => signOut()}
-            className="ml-auto flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
-          >
-            <LogOut size={16} />
-            Sign out
-          </button>
-        </div>
-      </header>
+    <div className="min-h-[100dvh] bg-canvas text-paper">
+      <AppHeader email={session.user.email ?? ''} onSignOut={() => signOut()} />
 
-      <main className="mx-auto max-w-7xl px-6 py-8">
-        {error ? (
-          <div className="mb-6 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-            {error}
+      <main className="mx-auto max-w-[1440px] px-5 py-8 sm:px-7 sm:py-10 lg:px-10">
+        <section className="mb-8 flex flex-col gap-3 sm:mb-10">
+          <h1 className="text-2xl font-semibold leading-[30px] text-paper sm:text-[28px] sm:leading-[34px]">
+            Private library.
+          </h1>
+          <p className="max-w-2xl text-[15px] leading-[23px] text-paper-muted">
+            Add a supported source, follow its ingest state, then play it from private storage.
+          </p>
+          <LibrarySummary total={counts.all} active={counts.active} ready={counts.complete} failed={counts.failed} />
+        </section>
+
+        <section className="mb-8 sm:mb-10">
+          <IngestRail onSubmit={handleSubmit} submitting={submitting} submitError={submitError} />
+        </section>
+
+        {loadError ? (
+          <div className="mb-6">
+            <InlineAlert tone="danger" message={loadError} onRetry={loadVideos} />
           </div>
         ) : null}
 
-        <DownloadForm onSubmit={handleDownload} disabled={submitting} />
+        <section aria-labelledby="library-heading">
+          <div className="mb-4 flex flex-col gap-3 sm:mb-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-baseline gap-2">
+              <h2 id="library-heading" className="text-xl font-semibold leading-[26px] text-paper">
+                Library
+              </h2>
+              <span className="font-mono text-xs text-paper-subtle">{filtered.length} shown</span>
+            </div>
+            <LibraryFilters filter={filter} onChange={setFilter} counts={counts} />
+          </div>
 
-        <div className="mt-8 flex flex-wrap items-center justify-between gap-4">
-          <h2 className="text-lg font-semibold">Library</h2>
-          <div className="flex gap-2">
-            {(['all', 'active', 'complete', 'failed'] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`rounded-lg px-3 py-1.5 text-sm capitalize transition ${
-                  filter === f
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800'
-                }`}
-              >
-                {f}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {loading ? (
-          <p className="py-12 text-center text-zinc-500">Loading videos...</p>
-        ) : filtered.length === 0 ? (
-          <div className="mt-8 rounded-2xl border border-dashed border-zinc-800 bg-zinc-900/30 py-16 text-center">
-            <Trash2 size={40} className="mx-auto mb-3 text-zinc-600" />
-            <p className="text-zinc-400">No videos yet. Paste a URL above to start downloading.</p>
-          </div>
-        ) : (
-          <div className="mt-6 grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {filtered.map((video) => (
-              <VideoCard
-                key={video.id}
-                video={video}
-                onDelete={handleDelete}
-                onPlay={setPlaying}
-              />
-            ))}
-          </div>
-        )}
+          {initialLoading ? (
+            <LibrarySkeleton />
+          ) : filtered.length === 0 ? (
+            videos.length === 0 ? (
+              <EmptyLibrary variant="first-use" />
+            ) : (
+              <EmptyLibrary variant="filtered" filterLabel={FILTER_LABELS[filter]} onShowAll={() => setFilter('all')} />
+            )
+          ) : (
+            <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(240px,1fr))]">
+              {filtered.map((video) => (
+                <VideoTile key={video.id} video={video} onPlay={setPlaying} onRequestDelete={setConfirmTarget} />
+              ))}
+            </div>
+          )}
+        </section>
       </main>
 
-      {playing ? <VideoPlayer video={playing} onClose={() => setPlaying(null)} /> : null}
+      <PlayerDialog video={playing} onClose={() => setPlaying(null)} />
+      <ConfirmDeleteDialog
+        video={confirmTarget}
+        busy={deleteBusy}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setConfirmTarget(null)}
+      />
     </div>
   )
 }
