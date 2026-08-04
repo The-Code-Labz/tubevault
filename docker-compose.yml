@@ -2,16 +2,8 @@ version: '3.8'
 
 services:
   tubevault:
-    # Build locally from the Dockerfile by default (includes Chromium + Playwright deps).
-    # If you prefer the prebuilt GHCR image, set TUBEVAULT_IMAGE_TAG in .env and remove
-    # or comment out the `build:` block below.
     image: ghcr.io/the-code-labz/tubevault:${TUBEVAULT_IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile
     container_name: tubevault
-    ports:
-      - "${PORT:-4050}:4050"
     networks:
       - traefik
       - default
