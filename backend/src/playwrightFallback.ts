@@ -1,5 +1,7 @@
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
+import { chromium, type Browser, type BrowserContext, type Page, type Response } from 'playwright'
 import { config } from './config.js'
+import { writeFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
 
 const MEDIA_EXTENSIONS = new Set([
   '.m3u8',
@@ -15,6 +17,14 @@ const MEDIA_EXTENSIONS = new Set([
   '.mpd',
 ])
 
+const MEDIA_CONTENT_TYPES = [
+  'video/',
+  'application/vnd.apple.mpegurl',
+  'application/x-mpegurl',
+  'application/dash+xml',
+  'application/octet-stream', // sometimes HLS segments are served as binary
+]
+
 const EXCLUDED_PATTERNS = [
   /google-analytics\.com/,
   /googletagmanager\.com/,
@@ -26,21 +36,51 @@ const EXCLUDED_PATTERNS = [
   /pubads/,
   /gstatic\.com/,
   /fonts\.google/,
+  /favicon/,
+  /\.js$/,
+  /\.css$/,
+  /\.png$/,
+  /\.jpg$/,
+  /\.jpeg$/,
+  /\.gif$/,
+  /\.webp$/,
+  /\.svg$/,
+  /\.woff2?$/,
 ]
 
-function looksLikeMedia(url: string): boolean {
+const CDN_DOMAIN_PATTERNS = [
+  /cdn/,
+  /media/,
+  /video/,
+  /hls/,
+  /dash/,
+  /stream/,
+  /edge/,
+  /cv\-/,
+  /phncdn/,
+  /rdtcdn/,
+  /xvideos-cdn/,
+  /pornhub/,
+  /redtube/,
+  /spankbang/,
+]
+
+function looksLikeMedia(url: string, contentType = ''): boolean {
   try {
     const parsed = new URL(url)
     const pathname = parsed.pathname.toLowerCase()
-    if (
-      Array.from(MEDIA_EXTENSIONS).some(
-        (ext: string) => pathname.endsWith(ext) || pathname.includes(`${ext}?`)
-      )
-    ) {
+
+    if (EXCLUDED_PATTERNS.some((re) => re.test(pathname))) return false
+
+    for (const ext of MEDIA_EXTENSIONS) {
+      if (pathname.endsWith(ext) || pathname.includes(`${ext}?`)) return true
+    }
+
+    const ct = contentType.toLowerCase()
+    if (MEDIA_CONTENT_TYPES.some((prefix) => ct.startsWith(prefix))) {
       return true
     }
-    if (pathname.endsWith('.m3u8') || pathname.includes('.m3u8?')) return true
-    if (pathname.endsWith('.mpd') || pathname.includes('.mpd?')) return true
+
     return false
   } catch {
     return false
@@ -51,19 +91,39 @@ function isExcluded(url: string): boolean {
   return EXCLUDED_PATTERNS.some((re) => re.test(url))
 }
 
-function scoreMediaUrl(url: string): number {
+function scoreMediaUrl(url: string, contentType = '', responseSize = 0): number {
   try {
     const parsed = new URL(url)
     const pathname = parsed.pathname.toLowerCase()
+    const hostname = parsed.hostname.toLowerCase()
     let score = 0
-    if (pathname.includes('.m3u8')) score += 100
-    if (pathname.includes('.mp4')) score += 80
-    if (pathname.includes('.m4s')) score += 70
-    if (pathname.includes('.ts')) score += 60
-    if (pathname.includes('.mpd')) score += 50
+
+    if (pathname.includes('.m3u8')) score += 120
+    if (pathname.includes('.mpd')) score += 110
+    if (pathname.includes('.mp4')) score += 90
+    if (pathname.includes('.webm')) score += 85
+    if (pathname.includes('.m4s')) score += 80
+    if (pathname.includes('.ts')) score += 70
+    if (pathname.includes('.mov')) score += 60
+
+    const ct = contentType.toLowerCase()
+    if (ct.includes('application/vnd.apple.mpegurl') || ct.includes('application/x-mpegurl')) score += 120
+    if (ct.includes('application/dash+xml')) score += 110
+    if (ct.startsWith('video/')) score += 90
+    if (ct === 'application/octet-stream' && pathname.includes('seg')) score += 50
+
+    if (pathname.includes('master')) score += 40
     if (pathname.includes('manifest')) score += 40
-    if (pathname.includes('master')) score += 30
-    if (pathname.includes('720') || pathname.includes('1080')) score += 20
+    if (pathname.includes('index')) score += 20
+    if (pathname.includes('playlist')) score += 30
+    if (pathname.includes('720') || pathname.includes('1080') || pathname.includes('480')) score += 20
+
+    if (CDN_DOMAIN_PATTERNS.some((re) => re.test(hostname))) score += 30
+
+    // Segment files are small; manifests and MP4s are bigger. Boost larger responses.
+    if (responseSize > 100_000) score += 15
+    if (responseSize > 1_000_000) score += 25
+
     return score
   } catch {
     return 0
@@ -82,8 +142,6 @@ interface PlaywrightCookie {
 }
 
 function looksLikeNetscapeCookies(data: string): boolean {
-  // Netscape cookies.txt starts with # comments and has tab-separated lines.
-  // Accept if any non-comment line has 7 tab-separated fields.
   return data.split('\n').some((line) => {
     const trimmed = line.trim()
     if (!trimmed || trimmed.startsWith('#')) return false
@@ -98,9 +156,8 @@ function parseNetscapeCookies(data: string): PlaywrightCookie[] {
     if (!line || line.startsWith('#')) continue
     const parts = line.split('\t')
     if (parts.length < 6) continue
-    // Netscape format: domain \t flag \t path \t secure \t expires \t name \t value
     const [domain, _flag, path, secure, expires, name, ...valueParts] = parts
-    const value = valueParts.join('\t') // value itself might contain tabs (rare)
+    const value = valueParts.join('\t')
     if (!name || !domain) continue
     const exp = parseInt(expires, 10)
     cookies.push({
@@ -130,6 +187,42 @@ function normalizeCookie(c: any): PlaywrightCookie {
       : config.playwrightCookiesSameSite,
     expires: typeof c.expires === 'number' && c.expires > 0 ? c.expires : undefined,
   }
+}
+
+export function netscapeCookiesToJson(data: string): PlaywrightCookie[] {
+  return parseNetscapeCookies(data)
+}
+
+export async function writeNetscapeCookiesFromJson(
+  sourceFile: string,
+  destinationFile: string
+): Promise<void> {
+  const fs = await import('node:fs/promises')
+  const data = await fs.readFile(sourceFile, 'utf-8')
+  let cookies: PlaywrightCookie[]
+  if (looksLikeNetscapeCookies(data)) {
+    cookies = parseNetscapeCookies(data)
+  } else {
+    const parsed = JSON.parse(data)
+    cookies = Array.isArray(parsed) ? parsed.map(normalizeCookie) : []
+  }
+
+  const lines = ['# Netscape HTTP Cookie File', '# Auto-generated by TubeVault', '']
+  for (const c of cookies) {
+    const domain = c.domain.startsWith('.') ? c.domain : `.${c.domain}`
+    const flag = domain.startsWith('.') ? 'TRUE' : 'FALSE'
+    const secure = c.secure ? 'TRUE' : 'FALSE'
+    const expires = c.expires ? String(c.expires) : '0'
+    lines.push([domain, flag, c.path, secure, expires, c.name, c.value].join('\t'))
+  }
+
+  await mkdirp(dirname(destinationFile))
+  await writeFile(destinationFile, lines.join('\n') + '\n')
+}
+
+async function mkdirp(p: string): Promise<void> {
+  const fs = await import('node:fs/promises')
+  await fs.mkdir(p, { recursive: true })
 }
 
 async function loadCookies(context: BrowserContext, cookiesFile: string) {
@@ -174,6 +267,8 @@ export interface MediaCandidate {
   url: string
   contentType?: string
   score: number
+  source: 'request' | 'response' | 'dom' | 'xhr' | 'mediasource'
+  responseSize?: number
 }
 
 export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): Promise<MediaCandidate[]> {
@@ -188,6 +283,18 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
   const mediaUrls = new Map<string, MediaCandidate>()
   let browser: Browser | null = null
   let context: BrowserContext | null = null
+
+  function addCandidate(candidate: MediaCandidate) {
+    const existing = mediaUrls.get(candidate.url)
+    if (!existing || existing.score < candidate.score) {
+      mediaUrls.set(candidate.url, candidate)
+      if (candidate.score >= 50) {
+        console.log(
+          `[playwright] candidate score=${candidate.score} source=${candidate.source}: ${candidate.url.slice(0, 200)}`
+        )
+      }
+    }
+  }
 
   try {
     const launchArgs: string[] = [
@@ -248,36 +355,83 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
 
     const page: Page = await context.newPage()
 
-    const onRequest = (request: any) => {
+    // Capture every request/response, including XHR/fetch, regardless of extension.
+    page.on('request', (request) => {
       const url = request.url()
       if (isExcluded(url)) return
-      if (looksLikeMedia(url)) {
-        const score = scoreMediaUrl(url)
-        const headers = request.headers()
-        const contentType = headers['content-type'] || ''
-        if (!mediaUrls.has(url) || (mediaUrls.get(url)?.score ?? 0) < score) {
-          mediaUrls.set(url, { url, contentType, score })
-          console.log(`[playwright] captured media candidate (${score}): ${url.slice(0, 200)}`)
-        }
+      const headers = request.headers()
+      const contentType = headers['content-type'] || ''
+      if (looksLikeMedia(url, contentType)) {
+        addCandidate({
+          url,
+          contentType,
+          score: scoreMediaUrl(url, contentType),
+          source: 'request',
+        })
       }
-    }
+    })
 
-    page.on('request', onRequest)
     page.on('requestfinished', async (request) => {
-      onRequest(request)
+      const url = request.url()
+      if (isExcluded(url)) return
       try {
         const response = await request.response()
         if (!response) return
-        const contentType = response.headers()['content-type'] || ''
-        const url = request.url()
+        const headers = response.headers()
+        const contentType = headers['content-type'] || ''
+        const contentLength = parseInt(headers['content-length'] || '0', 10)
+        const score = scoreMediaUrl(url, contentType, contentLength)
+        if (score > 0 || looksLikeMedia(url, contentType)) {
+          addCandidate({
+            url,
+            contentType,
+            score,
+            source: 'response',
+            responseSize: contentLength,
+          })
+        }
+      } catch {
+        // ignore
+      }
+    })
+
+    page.on('response', async (response: Response) => {
+      const url = response.url()
+      if (isExcluded(url)) return
+      try {
+        const headers = response.headers()
+        const contentType = headers['content-type'] || ''
+        const contentLength = parseInt(headers['content-length'] || '0', 10)
+        const score = scoreMediaUrl(url, contentType, contentLength)
+        if (score > 0) {
+          addCandidate({ url, contentType, score, source: 'response', responseSize: contentLength })
+        }
+
+        // Some players load manifests via fetch/XHR with no obvious extension.
+        // Peek at small responses and look for HLS/DASH signatures.
         if (
-          contentType.includes('video') ||
-          contentType.includes('application/vnd.apple.mpegurl') ||
-          contentType.includes('application/dash+xml')
+          (contentType.includes('json') || contentType.includes('text') || contentType === 'application/octet-stream') &&
+          contentLength > 0 &&
+          contentLength < 500_000
         ) {
-          const score = scoreMediaUrl(url) + 25
-          if (!mediaUrls.has(url) || (mediaUrls.get(url)?.score ?? 0) < score) {
-            mediaUrls.set(url, { url, contentType, score })
+          try {
+            const body = await response.text().catch(() => '')
+            if (
+              body.includes('#EXTM3U') ||
+              body.includes('#EXT-X-STREAM-INF') ||
+              body.includes('<MPD') ||
+              body.includes('<SmoothStreamingMedia')
+            ) {
+              addCandidate({
+                url,
+                contentType: 'application/vnd.apple.mpegurl',
+                score: 150,
+                source: 'response',
+                responseSize: contentLength,
+              })
+            }
+          } catch {
+            // ignore
           }
         }
       } catch {
@@ -297,15 +451,15 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
         timeout: config.playwrightTimeoutMs,
       })
 
-      // Wait for the player to load and request manifests
-      await page.waitForTimeout(4000)
+      // Give the page a moment to settle before interacting.
+      await page.waitForTimeout(3000)
 
-      // Try to dismiss common age gates / cookie prompts by clicking the first visible button
+      // Dismiss common age gates / cookie prompts.
       try {
         const buttons = await page.locator('button:visible').all()
-        for (const btn of buttons.slice(0, 6)) {
+        for (const btn of buttons.slice(0, 8)) {
           const text = await btn.textContent().catch(() => '')
-          if (/enter|yes|i am|confirm|agree|accept/i.test(text || '')) {
+          if (/enter|yes|i am|confirm|agree|accept|continue|got it/i.test(text || '')) {
             await btn.click({ timeout: 2000 })
             await page.waitForTimeout(1500)
             break
@@ -315,18 +469,88 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
         // ignore
       }
 
-      // Try to start playback so the manifest is requested
+      // Scroll down and back up to trigger lazy-loaded players.
+      try {
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2))
+        await page.waitForTimeout(1500)
+        await page.evaluate(() => window.scrollTo(0, 0))
+        await page.waitForTimeout(1000)
+      } catch {
+        // ignore
+      }
+
+      // Try to click the video player to start playback / trigger manifest load.
       try {
         const player = page.locator('video').first()
         if (await player.isVisible().catch(() => false)) {
           await player.click({ timeout: 3000 })
-          await page.waitForTimeout(3000)
+          await page.waitForTimeout(4000)
         }
       } catch {
         // ignore
       }
 
-      await page.waitForTimeout(3000)
+      // Also try clicking the largest visible image or the body center as a fallback.
+      try {
+        const bodyClick = page.locator('body')
+        await bodyClick.click({ position: { x: 100, y: 100 }, timeout: 2000, force: true })
+        await page.waitForTimeout(2000)
+      } catch {
+        // ignore
+      }
+
+      // Extract media URLs directly from the DOM: <video src>, <source src>, data-src, etc.
+      try {
+        const domUrls = await page.evaluate(() => {
+          const results: Array<{ url: string; source: string }> = []
+          const selectors = ['video', 'source', 'audio']
+          for (const sel of selectors) {
+            for (const el of Array.from(document.querySelectorAll(sel))) {
+              const url =
+                el.getAttribute('src') ||
+                el.getAttribute('data-src') ||
+                el.getAttribute('data-video') ||
+                el.getAttribute('data-source')
+              if (url) results.push({ url, source: el.tagName.toLowerCase() })
+            }
+          }
+          // Some players store the manifest in a global variable.
+          const globals = ['videojs', 'jwplayer', 'player', 'flowplayer', 'clappr', 'plyr']
+          for (const g of globals) {
+            try {
+              const val = (window as any)[g]
+              if (val && typeof val === 'object') {
+                const src = val.src || val.currentSrc || val.source || val.sources
+                if (typeof src === 'string') results.push({ url: src, source: `global:${g}` })
+                if (Array.isArray(src)) {
+                  for (const s of src) {
+                    const u = typeof s === 'string' ? s : s?.file || s?.src || s?.url
+                    if (u) results.push({ url: u, source: `global:${g}` })
+                  }
+                }
+              }
+            } catch {
+              // ignore
+            }
+          }
+          return results
+        })
+        for (const { url, source } of domUrls) {
+          addCandidate({
+            url,
+            score: scoreMediaUrl(url) + (url.startsWith('blob:') ? -30 : 30),
+            source: 'dom',
+          })
+        }
+        if (domUrls.length > 0) {
+          console.log(`[playwright] extracted ${domUrls.length} DOM/global media reference(s)`)
+        }
+      } catch {
+        // ignore
+      }
+
+      // Wait for any late network activity after interactions.
+      await page.waitForTimeout(4000)
     } finally {
       signal?.removeEventListener('abort', abortListener)
       await context?.close().catch(() => {})

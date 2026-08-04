@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { config } from './config.js'
 import { db } from './db.js'
 import { createStorageProvider } from './storage.js'
-import { extractMediaUrls } from './playwrightFallback.js'
+import { extractMediaUrls, writeNetscapeCookiesFromJson } from './playwrightFallback.js'
 import type { StorageBackend, Video } from './types.js'
 
 const activeJobs = new Map<string, { controller: AbortController; child?: ReturnType<typeof spawn> }>()
@@ -93,7 +93,33 @@ export async function updateYtDlp(): Promise<string> {
   })
 }
 
-function buildBaseArgs(): string[] {
+async function ensureNetscapeCookiesFile(sourcePath: string): Promise<string | null> {
+  // yt-dlp only accepts Netscape-format cookies.txt. If the user mounted a JSON
+  // cookie file, convert it once to a temp Netscape file and point yt-dlp at that.
+  const fs = await import('node:fs/promises')
+  const path = await import('node:path')
+  const data = await fs.readFile(sourcePath, 'utf-8').catch(() => '')
+  const trimmed = data.trim()
+  if (!trimmed) return null
+
+  const looksLikeJson = trimmed.startsWith('[') || trimmed.startsWith('{')
+  if (!looksLikeJson) {
+    // Already Netscape or unknown — let yt-dlp decide.
+    return sourcePath
+  }
+
+  const netscapePath = path.join(path.dirname(sourcePath), `cookies-ytdlp-${Date.now()}.txt`)
+  try {
+    await writeNetscapeCookiesFromJson(sourcePath, netscapePath)
+    console.log(`[downloader] converted JSON cookies to Netscape format for yt-dlp: ${netscapePath}`)
+    return netscapePath
+  } catch (err) {
+    console.warn(`[downloader] failed to convert cookies to Netscape: ${(err as Error).message}`)
+    return sourcePath
+  }
+}
+
+async function buildBaseArgs(): Promise<string[]> {
   const args: string[] = ['--no-playlist', '--newline']
 
   if (config.ytDlpUserAgent) {
@@ -114,7 +140,10 @@ function buildBaseArgs(): string[] {
           `inside the container. Downloads will proceed WITHOUT cookies. Check your volume mount / path.`
       )
     } else {
-      args.push('--cookies', config.ytDlpCookiesFile)
+      const netscapePath = await ensureNetscapeCookiesFile(config.ytDlpCookiesFile)
+      if (netscapePath) {
+        args.push('--cookies', netscapePath)
+      }
     }
   }
 
@@ -171,7 +200,7 @@ export async function fetchMetadata(url: string, signal?: AbortSignal): Promise<
   extractor?: string
   uploader?: string
 }> {
-  const args = [...buildBaseArgs(), '--dump-single-json', url]
+  const args = [...await buildBaseArgs(), '--dump-single-json', url]
   const { stdout, stderr } = await runYtDlp(args, { signal })
 
   try {
@@ -345,7 +374,7 @@ async function downloadWithYtDlp(
     'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best/best*[ext=mp4]/worst'
 
   const args = [
-    ...buildBaseArgs(),
+    ...await buildBaseArgs(),
     '-f', formatSelector,
     '--merge-output-format', 'mp4',
     '--remux-video', 'mp4',
@@ -427,9 +456,11 @@ async function downloadWithPlaywrightFallback(
     }
 
     try {
+      const baseArgs = await buildBaseArgs()
       const args = [
         '--no-playlist',
         '--newline',
+        ...baseArgs,
         ...extraArgs,
         '-f', 'bestvideo*+bestaudio/bestvideo+bestaudio/best/best*[ext=mp4]/worst',
         '--merge-output-format', 'mp4',
