@@ -70,13 +70,16 @@ export const config = {
   ytDlpReferer: process.env.YTDLP_REFERER || '',
   ytDlpCustomArgs: parseCustomArgs(process.env.YTDLP_CUSTOM_ARGS),
 
-  // Playwright fallback for adult / JS-heavy / HLS sites
-  // When yt-dlp fails on these domains, TubeVault launches Chromium, intercepts network traffic,
+  // Playwright fallback for any site yt-dlp cannot handle (JS players, age gates, HLS embeds).
+  // When yt-dlp fails, TubeVault launches Chromium, intercepts network traffic,
   // grabs the .m3u8 / .mp4 / .ts manifest URL, and feeds it back to yt-dlp with proper headers.
   playwrightFallbackEnabled: process.env.PLAYWRIGHT_FALLBACK_ENABLED !== 'false',
-  playwrightFallbackSites: process.env.PLAYWRIGHT_FALLBACK_SITES || 'redtube|pornhub|xvideos|xhamster|spankbang|youporn|camwhores|eporner|xnxx',
+  // Empty (default) = try browser fallback on ANY hostname after yt-dlp fails.
+  // Set a regex to restrict fallback to matching hostnames only (e.g. "redtube|fmoviess").
+  playwrightFallbackSites: process.env.PLAYWRIGHT_FALLBACK_SITES ?? '',
   playwrightHeadless: process.env.PLAYWRIGHT_HEADLESS !== 'false',
-  playwrightTimeoutMs: parseInt(process.env.PLAYWRIGHT_TIMEOUT_MS || '30000', 10),
+  // JS-player sites (fmoviess-style) often need longer than 30s to boot the embed + pick a server.
+  playwrightTimeoutMs: parseInt(process.env.PLAYWRIGHT_TIMEOUT_MS || '60000', 10),
   playwrightStealth: process.env.PLAYWRIGHT_STEALTH === 'true',
   playwrightUserAgent: process.env.PLAYWRIGHT_USER_AGENT || '',
   playwrightProxyServer: process.env.PLAYWRIGHT_PROXY_SERVER || '',

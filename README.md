@@ -62,7 +62,7 @@ This vault has no public self-signup. There are two parts to that, and only one 
 
 ### 3. Run with Docker (recommended)
 
-`docker-compose.yml` builds locally from the included `Dockerfile` by default, so Chromium + Playwright deps are baked in and adult-site fallback works out of the box.
+`docker-compose.yml` builds locally from the included `Dockerfile` by default, so Chromium + Playwright deps are baked in and the browser fallback works out of the box for sites yt-dlp cannot extract.
 
 ```bash
 docker compose up --build -d
@@ -114,26 +114,34 @@ npm start
 | `YTDLP_COOKIES_FILE` | No | Path to a Netscape cookies.txt (inside container) |
 | `YTDLP_REFERER` | No | Force a Referer header |
 | `YTDLP_CUSTOM_ARGS` | No | Extra args passed to yt-dlp |
-| `PLAYWRIGHT_FALLBACK_ENABLED` | No | Browser fallback when yt-dlp fails on adult/JS sites (default `true`) |
-| `PLAYWRIGHT_FALLBACK_SITES` | No | Hostname regex for fallback (default covers major adult sites) |
+| `PLAYWRIGHT_FALLBACK_ENABLED` | No | Browser fallback when yt-dlp fails (default `true`) |
+| `PLAYWRIGHT_FALLBACK_SITES` | No | Optional hostname regex allowlist. **Empty (default) = try fallback on any host** after yt-dlp fails |
 | `PLAYWRIGHT_HEADLESS` | No | Run Chromium headless (default `true`) |
-| `PLAYWRIGHT_TIMEOUT_MS` | No | Page load timeout (default `30000`) |
+| `PLAYWRIGHT_TIMEOUT_MS` | No | Page load timeout (default `60000`) |
 | `PLAYWRIGHT_STEALTH` | No | Use playwright-extra stealth plugin if installed |
 | `PLAYWRIGHT_PROXY_SERVER` | No | Proxy for Chromium, yt-dlp, and direct downloads, e.g. `socks5://user:pass@host:1080` |
 | `PLAYWRIGHT_COOKIES_FILE` | No | Cookie file for Chromium — JSON array **or** Netscape cookies.txt |
 | `PLAYWRIGHT_COOKIES_SAMESITE` | No | Override SameSite default (`Lax`) — try `None` for cross-site players |
 | `PLAYWRIGHT_EXTRA_ARGS` | No | Extra Chromium launch flags |
 
-## Adult sites (RedTube, PornHub, XVideos, etc.)
+## Sites yt-dlp cannot extract (Playwright fallback)
 
-TubeVault has **two layers** for these sites:
+TubeVault has **two layers** for downloads:
 
-1. **yt-dlp direct extraction** — fastest, works for most sites.
-2. **Playwright browser fallback** — launches Chromium, dismisses the age gate, intercepts the page's network traffic, extracts the real video URL from the DOM **and** from inline JS player configs, then downloads it directly with the same cookies/headers the browser used.
+1. **yt-dlp direct extraction** — fastest, works for most sites (YouTube, Vimeo, many tubes, direct media URLs).
+2. **Playwright browser fallback** — when yt-dlp fails, launches Chromium, dismisses age gates, clicks play/server controls on JS embed players, intercepts network traffic (including iframe players), extracts the real `.m3u8` / `.mp4` URL, then downloads it with the correct Referer/Origin headers.
 
-The fallback triggers automatically when yt-dlp fails on a domain matching `PLAYWRIGHT_FALLBACK_SITES`.
+By default the fallback runs on **any hostname** after yt-dlp fails (`PLAYWRIGHT_FALLBACK_SITES` empty). Set `PLAYWRIGHT_FALLBACK_SITES` only if you want to restrict which hosts may use the browser path.
 
-### Tips for adult sites
+### Supported fallback patterns
+
+| Pattern | Examples | What the fallback does |
+|---|---|---|
+| Adult tube sites | RedTube, PornHub, XVideos | Age-gate click, DOM/JS config scrape, CDN media intercept |
+| JS embed / free-stream players | **fmoviess.org**, fmovies-style clones | Click Play → open player iframe → walk Server 1/2/3 → capture HLS master from netoda/CDN |
+| Direct HLS/DASH after browser boot | Many embed hosts | Intercept master `.m3u8` / `.mpd` and hand to yt-dlp with player Referer |
+
+### Tips for hard sites
 
 1. **Keep yt-dlp up to date.** TubeVault runs `yt-dlp -U` on startup by default. Site extractors break frequently.
 2. **Cookies / age gate.** The Playwright fallback now tries to click common age-gate buttons automatically. If it still downloads a short "age verification" preview, the cookies you exported probably don't include the age-verified token. Export cookies **after** you have clicked "Enter / I am 18" in your browser:
@@ -166,6 +174,12 @@ The fallback triggers automatically when yt-dlp fails on a domain matching `PLAY
    ```
    Once either path works, paste the URL into TubeVault.
 5. **Preview / age-gate video still downloads?** Check the file size in the UI. If it's under ~200 KB, TubeVault rejects it as a preview and tries the next candidate. If no candidate is large enough, your cookies are missing the age-verified token — re-export them after clicking through the gate in your browser.
+6. **fmoviess / similar free-stream sites.** Paste the **film page URL** (not a raw m3u8). TubeVault will fail yt-dlp, open Playwright, click Play, try multiple servers, capture the tokenized HLS master, and download the full movie with `Referer: https://netoda.tech/`. Tokens expire — the browser path re-extracts a fresh one each job. If a job fails mid-download, retry; do not paste a stale m3u8 from an old browser session unless you just copied it.
+7. **Restrict fallback (optional).** To only allow browser fallback on specific hosts:
+   ```bash
+   PLAYWRIGHT_FALLBACK_SITES=redtube|pornhub|fmoviess|fmovies
+   ```
+   Leave it empty (default) to try Playwright whenever yt-dlp fails.
 
 ## Cookie sync (no manual re-export)
 
