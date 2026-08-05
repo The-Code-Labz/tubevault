@@ -38,6 +38,19 @@ const EXCLUDED_PATTERNS = [
   /gstatic\.com/,
   /fonts\.google/,
   /favicon/,
+  /googlesyndication/,
+  /pagead/,
+  /adservice/,
+  /adnxs\.com/,
+  /taboola/,
+  /outbrain/,
+  /popads/,
+  /popcash/,
+  /exoclick/,
+  /trafficjunky/,
+  /tsyndicate/,
+  /chrome-error:/,
+  /https?:\/\/undefined\//,
   /\.js$/,
   /\.css$/,
   /\.png$/,
@@ -47,6 +60,8 @@ const EXCLUDED_PATTERNS = [
   /\.webp$/,
   /\.svg$/,
   /\.woff2?$/,
+  /\.vtt$/,
+  /\.srt$/,
 ]
 
 const CDN_DOMAIN_PATTERNS = [
@@ -64,6 +79,13 @@ const CDN_DOMAIN_PATTERNS = [
   /pornhub/,
   /redtube/,
   /spankbang/,
+  /netoda/,
+  /embos/,
+  /voxzer/,
+  /s1q\d/,
+  /m3u8/,
+  /fmoviess?/,
+  /fmovies/,
 ]
 
 function looksLikeMedia(url: string, contentType = ''): boolean {
@@ -113,10 +135,14 @@ function scoreMediaUrl(url: string, contentType = '', responseSize = 0): number 
     if (ct.startsWith('video/')) score += 90
     if (ct === 'application/octet-stream' && pathname.includes('seg')) score += 50
 
-    if (pathname.includes('master')) score += 40
+    if (pathname.includes('master')) score += 50
     if (pathname.includes('manifest')) score += 40
     if (pathname.includes('index')) score += 20
     if (pathname.includes('playlist')) score += 30
+    // Prefer full movie playlists over single segments / previews.
+    if (pathname.includes('preview') || pathname.includes('trailer') || pathname.includes('thumb')) score -= 80
+    if (pathname.endsWith('.ts') && !pathname.includes('m3u8')) score -= 20
+    if (/token=/.test(url) && pathname.includes('.m3u8')) score += 15
 
     if (pathname.includes('2160') || pathname.includes('4k')) score += 35
     if (pathname.includes('1080')) score += 30
@@ -274,6 +300,10 @@ export interface MediaCandidate {
   score: number
   source: 'request' | 'response' | 'dom' | 'xhr' | 'mediasource' | 'jscfg'
   responseSize?: number
+  /** Preferred Referer when downloading this media (player origin, not page). */
+  referer?: string
+  /** Preferred Origin header when downloading this media. */
+  origin?: string
 }
 
 export interface ExtractionResult {
@@ -299,11 +329,20 @@ export function buildCookieHeader(cookies: Cookie[], targetUrl: string): string 
 }
 
 export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): Promise<ExtractionResult> {
-  if (config.playwrightFallbackSites) {
-    const regex = new RegExp(config.playwrightFallbackSites, 'i')
-    if (!regex.test(new URL(pageUrl).hostname)) {
-      console.log(`[playwright] skipping fallback: ${pageUrl} does not match fallback sites`)
-      return { candidates: [], cookies: [], title: '' }
+  // Empty PLAYWRIGHT_FALLBACK_SITES (default) = allow any host after yt-dlp fails.
+  // Non-empty value is a hostname regex allowlist.
+  const sitesAllow = (config.playwrightFallbackSites || '').trim()
+  if (sitesAllow) {
+    try {
+      const regex = new RegExp(sitesAllow, 'i')
+      if (!regex.test(new URL(pageUrl).hostname)) {
+        console.log(`[playwright] skipping fallback: ${pageUrl} does not match fallback sites`)
+        return { candidates: [], cookies: [], title: '' }
+      }
+    } catch {
+      console.warn(
+        `[playwright] invalid PLAYWRIGHT_FALLBACK_SITES regex "${sitesAllow}"; allowing all hosts`
+      )
     }
   }
 
@@ -394,6 +433,164 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
 
     const page: Page = await context.newPage()
 
+    // Block obvious ad/tracker hosts only. Do NOT reuse isExcluded() here —
+    // that list intentionally matches .js/.css/image extensions for media
+    // candidate filtering and would break the page if used as a route abort.
+    try {
+      await page.route('**/*', async (route) => {
+        const reqUrl = route.request().url()
+        const adHost =
+          /googlesyndication|doubleclick\.net|googletagmanager|google-analytics|adnxs\.com|taboola|outbrain|popads|popcash|exoclick|trafficjunky|tsyndicate|pagead2?\.|adservice\.|scorecardresearch|hotjar|facebook\.com\/tr/i.test(
+            reqUrl
+          )
+        if (adHost && !looksLikeMedia(reqUrl)) {
+          await route.abort().catch(() => {})
+          return
+        }
+        // Drop obviously broken ad navigations that stall the player.
+        if (/^https?:\/\/undefined\//i.test(reqUrl) || reqUrl.startsWith('chrome-error://')) {
+          await route.abort().catch(() => {})
+          return
+        }
+        await route.continue().catch(() => {})
+      })
+    } catch {
+      // route API may fail in some environments; non-fatal
+    }
+
+    const attachNetworkListeners = (target: Page) => {
+      target.on('request', (request) => {
+        const url = request.url()
+        if (isExcluded(url)) return
+        const headers = request.headers()
+        const contentType = headers['content-type'] || ''
+        if (looksLikeMedia(url, contentType)) {
+          const referer = headers['referer'] || headers['Referer'] || ''
+          let origin = headers['origin'] || headers['Origin'] || ''
+          if (!origin && referer) {
+            try { origin = new URL(referer).origin } catch { /* ignore */ }
+          }
+          addCandidate({
+            url,
+            contentType,
+            score: scoreMediaUrl(url, contentType),
+            source: 'request',
+            referer: referer || undefined,
+            origin: origin || undefined,
+          })
+        }
+      })
+
+      target.on('requestfinished', async (request) => {
+        const url = request.url()
+        if (isExcluded(url)) return
+        try {
+          const response = await request.response()
+          if (!response) return
+          const headers = response.headers()
+          const reqHeaders = request.headers()
+          const contentType = headers['content-type'] || ''
+          const contentLength = parseInt(headers['content-length'] || '0', 10)
+          const score = scoreMediaUrl(url, contentType, contentLength)
+          if (score > 0 || looksLikeMedia(url, contentType)) {
+            const referer = reqHeaders['referer'] || reqHeaders['Referer'] || ''
+            let origin = reqHeaders['origin'] || reqHeaders['Origin'] || ''
+            if (!origin && referer) {
+              try { origin = new URL(referer).origin } catch { /* ignore */ }
+            }
+            addCandidate({
+              url,
+              contentType,
+              score,
+              source: 'response',
+              responseSize: contentLength,
+              referer: referer || undefined,
+              origin: origin || undefined,
+            })
+          }
+        } catch {
+          // ignore
+        }
+      })
+
+      target.on('response', async (response: Response) => {
+        const url = response.url()
+        if (isExcluded(url)) return
+        try {
+          const headers = response.headers()
+          const contentType = headers['content-type'] || ''
+          const contentLength = parseInt(headers['content-length'] || '0', 10)
+          const score = scoreMediaUrl(url, contentType, contentLength)
+          const reqHeaders = response.request().headers()
+          const referer = reqHeaders['referer'] || reqHeaders['Referer'] || ''
+          let origin = reqHeaders['origin'] || reqHeaders['Origin'] || ''
+          if (!origin && referer) {
+            try { origin = new URL(referer).origin } catch { /* ignore */ }
+          }
+          if (score > 0) {
+            addCandidate({
+              url,
+              contentType,
+              score,
+              source: 'response',
+              responseSize: contentLength,
+              referer: referer || undefined,
+              origin: origin || undefined,
+            })
+          }
+
+          // Some players load manifests via fetch/XHR with no obvious extension.
+          // Peek at small responses and look for HLS/DASH signatures.
+          if (
+            (contentType.includes('json') || contentType.includes('text') || contentType === 'application/octet-stream' || contentType.includes('mpegurl')) &&
+            contentLength > 0 &&
+            contentLength < 500_000
+          ) {
+            try {
+              const body = await response.text().catch(() => '')
+              if (
+                body.includes('#EXTM3U') ||
+                body.includes('#EXT-X-STREAM-INF') ||
+                body.includes('<MPD') ||
+                body.includes('<SmoothStreamingMedia')
+              ) {
+                addCandidate({
+                  url,
+                  contentType: 'application/vnd.apple.mpegurl',
+                  score: 150,
+                  source: 'response',
+                  responseSize: contentLength,
+                  referer: referer || undefined,
+                  origin: origin || undefined,
+                })
+              }
+            } catch {
+              // ignore
+            }
+          }
+        } catch {
+          // ignore
+        }
+      })
+    }
+
+    attachNetworkListeners(page)
+
+    // Capture media from nested player iframes (fmoviess → netoda → jwplayer).
+    page.on('frameattached', (frame) => {
+      try {
+        const framePage = frame.page()
+        // Listeners are on Page, which already covers subframe network in Playwright.
+        // Keep a log for diagnostics.
+        const fu = frame.url()
+        if (fu && !fu.startsWith('about:')) {
+          console.log(`[playwright] frame attached: ${fu.slice(0, 160)}`)
+        }
+      } catch {
+        // ignore
+      }
+    })
+
     // --- Proxy diagnostics: log egress IP seen by the target site ------------
     try {
       const ipChecks = [
@@ -415,90 +612,6 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
     } catch {
       // ignore diagnostic failures
     }
-
-    // Capture every request/response, including XHR/fetch, regardless of extension.
-    page.on('request', (request) => {
-      const url = request.url()
-      if (isExcluded(url)) return
-      const headers = request.headers()
-      const contentType = headers['content-type'] || ''
-      if (looksLikeMedia(url, contentType)) {
-        addCandidate({
-          url,
-          contentType,
-          score: scoreMediaUrl(url, contentType),
-          source: 'request',
-        })
-      }
-    })
-
-    page.on('requestfinished', async (request) => {
-      const url = request.url()
-      if (isExcluded(url)) return
-      try {
-        const response = await request.response()
-        if (!response) return
-        const headers = response.headers()
-        const contentType = headers['content-type'] || ''
-        const contentLength = parseInt(headers['content-length'] || '0', 10)
-        const score = scoreMediaUrl(url, contentType, contentLength)
-        if (score > 0 || looksLikeMedia(url, contentType)) {
-          addCandidate({
-            url,
-            contentType,
-            score,
-            source: 'response',
-            responseSize: contentLength,
-          })
-        }
-      } catch {
-        // ignore
-      }
-    })
-
-    page.on('response', async (response: Response) => {
-      const url = response.url()
-      if (isExcluded(url)) return
-      try {
-        const headers = response.headers()
-        const contentType = headers['content-type'] || ''
-        const contentLength = parseInt(headers['content-length'] || '0', 10)
-        const score = scoreMediaUrl(url, contentType, contentLength)
-        if (score > 0) {
-          addCandidate({ url, contentType, score, source: 'response', responseSize: contentLength })
-        }
-
-        // Some players load manifests via fetch/XHR with no obvious extension.
-        // Peek at small responses and look for HLS/DASH signatures.
-        if (
-          (contentType.includes('json') || contentType.includes('text') || contentType === 'application/octet-stream') &&
-          contentLength > 0 &&
-          contentLength < 500_000
-        ) {
-          try {
-            const body = await response.text().catch(() => '')
-            if (
-              body.includes('#EXTM3U') ||
-              body.includes('#EXT-X-STREAM-INF') ||
-              body.includes('<MPD') ||
-              body.includes('<SmoothStreamingMedia')
-            ) {
-              addCandidate({
-                url,
-                contentType: 'application/vnd.apple.mpegurl',
-                score: 150,
-                source: 'response',
-                responseSize: contentLength,
-              })
-            }
-          } catch {
-            // ignore
-          }
-        }
-      } catch {
-        // ignore
-      }
-    })
 
     const abortListener = () => {
       console.log('[playwright] abort signal received, closing browser')
@@ -624,6 +737,279 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
         await page.waitForTimeout(2000)
       } catch {
         // ignore
+      }
+
+      // --- JS embed players (fmoviess / similar free-stream sites) ----------
+      // Flow: click #play-now → Bootstrap collapse #play-btn → #playit iframe
+      // on netoda.tech → try Server 1/2/3 until a direct HLS master appears.
+      try {
+        const host = new URL(pageUrl).hostname.toLowerCase()
+        const isEmbedPlayerSite =
+          /fmoviess?|fmovies|netoda|bflix|sflix|hdtoday|m4ufree|soap2day/i.test(host) ||
+          (await page.locator('#play-now, #playit, #play-btn, [id^="srv-"]').count().catch(() => 0)) > 0
+
+        if (isEmbedPlayerSite) {
+          console.log('[playwright] embed-player site detected; running play/server bootstrap')
+
+          // Prefer a real Play control over random body clicks.
+          // fmoviess: #play-now toggles Bootstrap collapse #play-btn which then
+          // injects #playit (netoda iframe). Sometimes one click is not enough.
+          const playSelectors = [
+            '#play-now',
+            'button#play-now',
+            'a#play-now',
+            'a[href="#play-btn"]',
+            '[data-bs-toggle="collapse"][href="#play-btn"]',
+            '[data-toggle="collapse"][href="#play-btn"]',
+            '.play-now',
+            'button:has-text("Play")',
+            'a:has-text("Play Now")',
+            'button:has-text("Watch")',
+            '.watch-movie',
+            '#watch-movie',
+          ]
+
+          // Expand collapsed Bootstrap shells. On fmoviess the servers + player
+          // iframe live under #play-btn.collapse and are not "visible" until shown.
+          const expandPlayShell = async () => {
+            await page.evaluate(() => {
+              const forceShow = (el: Element | null) => {
+                if (!el) return
+                const html = el as HTMLElement
+                html.classList.add('show', 'in')
+                html.classList.remove('collapse')
+                html.style.display = 'block'
+                html.style.visibility = 'visible'
+                html.style.height = 'auto'
+                html.removeAttribute('hidden')
+                html.setAttribute('aria-expanded', 'true')
+              }
+              forceShow(document.querySelector('#play-btn'))
+              forceShow(document.querySelector('#playit')?.parentElement || null)
+              // Fire native click on play control so site JS builds the iframe.
+              const playNow =
+                (document.querySelector('#play-now') as HTMLElement | null) ||
+                (document.querySelector('a[href="#play-btn"]') as HTMLElement | null)
+              playNow?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
+              playNow?.click()
+            }).catch(() => {})
+          }
+
+          const hasPlayerFrame = async () => {
+            const count = await page
+              .locator('#playit iframe, iframe[src*="netoda"], iframe[src*="embos"], iframe[src*="watch"], #playit[src]')
+              .count()
+              .catch(() => 0)
+            return count > 0
+          }
+
+          await expandPlayShell()
+
+          for (let attempt = 0; attempt < 4 && !(await hasPlayerFrame()); attempt++) {
+            for (const sel of playSelectors) {
+              try {
+                const loc = page.locator(sel).first()
+                // Use attached+force — controls may be offscreen or covered by ads.
+                if ((await loc.count().catch(() => 0)) > 0) {
+                  await loc.click({ timeout: 3000, force: true })
+                  console.log(`[playwright] clicked play control: ${sel} (attempt ${attempt + 1})`)
+                  break
+                }
+              } catch {
+                // next
+              }
+            }
+            await expandPlayShell()
+            await page.waitForTimeout(3000)
+          }
+
+          // Wait for player iframe (attached is enough; nested frame may be hidden briefly).
+          try {
+            await page.waitForSelector(
+              '#playit iframe, iframe[src*="netoda"], iframe[src*="embos"], iframe[src*="watch"], #playit[src]',
+              { timeout: Math.min(config.playwrightTimeoutMs, 25000), state: 'attached' }
+            )
+            console.log('[playwright] player iframe/shell appeared')
+          } catch {
+            console.warn('[playwright] player iframe did not appear after play click')
+            try {
+              const dbg = await page.evaluate(() => ({
+                hasPlayNow: !!document.querySelector('#play-now'),
+                hasPlayBtn: !!document.querySelector('#play-btn'),
+                playBtnClass: (document.querySelector('#play-btn') as HTMLElement | null)?.className || '',
+                playBtnDisplay: (document.querySelector('#play-btn') as HTMLElement | null)?.style?.display || '',
+                iframeCount: document.querySelectorAll('iframe').length,
+                iframeSrcs: Array.from(document.querySelectorAll('iframe')).map((f) => (f as HTMLIFrameElement).src).slice(0, 5),
+                serverCount: document.querySelectorAll('[id^="srv-"]').length,
+                serverIds: Array.from(document.querySelectorAll('[id^="srv-"]')).map((e) => e.id).slice(0, 8),
+              }))
+              console.log('[playwright] embed DOM debug:', JSON.stringify(dbg))
+            } catch {
+              // ignore
+            }
+          }
+
+          // Always expand again before server clicks so force-click targets are in layout.
+          await expandPlayShell()
+
+          // Try multiple servers. On fmoviess, Server 1 is often "direct" HLS
+          // while Server 2 is an embed wrapper with no interceptable media.
+          const serverSelectors = [
+            '#srv-1', '#srv-2', '#srv-3', '#srv-4', '#srv-5',
+            'button[id^="srv-"]',
+            'a[id^="srv-"]',
+            '.server-item',
+            '[data-server]',
+            'button:has-text("Server")',
+          ]
+
+          const tryExtractFromFrames = async () => {
+            const urls: string[] = []
+            for (const frame of page.frames()) {
+              try {
+                const found = await frame.evaluate(() => {
+                  const out: string[] = []
+                  const push = (u?: string | null) => {
+                    if (u && typeof u === 'string' && !u.startsWith('blob:')) out.push(u)
+                  }
+                  for (const el of Array.from(document.querySelectorAll('video, source'))) {
+                    push(el.getAttribute('src'))
+                    push(el.getAttribute('data-src'))
+                  }
+                  // JWPlayer
+                  try {
+                    const jw = (window as any).jwplayer
+                    if (typeof jw === 'function') {
+                      const players = typeof jw.getPlayers === 'function' ? jw.getPlayers() : []
+                      const list = players && players.length ? players : [jw()]
+                      for (const p of list) {
+                        try {
+                          const item = p?.getPlaylistItem?.() || p?.getConfig?.()?.playlist?.[0]
+                          const sources = item?.sources || item?.file || p?.getPlaylist?.()?.[0]?.sources
+                          if (typeof sources === 'string') push(sources)
+                          if (Array.isArray(sources)) {
+                            for (const s of sources) push(typeof s === 'string' ? s : s?.file || s?.src)
+                          }
+                          if (item?.file) push(item.file)
+                        } catch {
+                          // ignore single player
+                        }
+                      }
+                    }
+                  } catch {
+                    // ignore
+                  }
+                  // Generic globals
+                  for (const g of ['player', 'videojs', 'clappr', 'plyr', 'flowplayer']) {
+                    try {
+                      const val = (window as any)[g]
+                      if (!val) continue
+                      const src = val.src || val.currentSrc || val.source || val.sources
+                      if (typeof src === 'string') push(src)
+                      if (Array.isArray(src)) {
+                        for (const s of src) push(typeof s === 'string' ? s : s?.file || s?.src || s?.url)
+                      }
+                    } catch {
+                      // ignore
+                    }
+                  }
+                  return out
+                })
+                urls.push(...(found || []))
+              } catch {
+                // cross-origin frame — network listener still covers it
+              }
+            }
+            return urls
+          }
+
+          // Click each server once and wait for media.
+          const clickedServers = new Set<string>()
+          for (const sel of serverSelectors) {
+            try {
+              const buttons = page.locator(sel)
+              const count = await buttons.count()
+              for (let i = 0; i < Math.min(count, 6); i++) {
+                const btn = buttons.nth(i)
+                // Servers often sit inside a collapsed panel — force click attached nodes.
+                if ((await btn.count().catch(() => 0)) === 0) continue
+                const key = `${sel}#${i}:${(await btn.textContent().catch(() => ''))?.trim()}`
+                if (clickedServers.has(key)) continue
+                clickedServers.add(key)
+                await expandPlayShell()
+                await btn.click({ timeout: 3000, force: true }).catch(() => {})
+                console.log(`[playwright] clicked server control: ${key.slice(0, 80)}`)
+                await page.waitForTimeout(5000)
+
+                // Prefer early exit if we already have a strong master playlist.
+                const strong = Array.from(mediaUrls.values()).some(
+                  (c) => c.score >= 140 && /\.m3u8/i.test(c.url)
+                )
+                if (strong) {
+                  console.log('[playwright] strong HLS master already captured; stopping server walk')
+                  break
+                }
+
+                const frameUrls = await tryExtractFromFrames()
+                for (const u of frameUrls) {
+                  let referer: string | undefined
+                  let origin: string | undefined
+                  try {
+                    if (/netoda|embos|voxzer|s1q\d|\/hls\//i.test(u)) {
+                      referer = 'https://netoda.tech/'
+                      origin = 'https://netoda.tech'
+                    }
+                  } catch {
+                    // ignore
+                  }
+                  addCandidate({
+                    url: u,
+                    score: scoreMediaUrl(u) + 40,
+                    source: 'dom',
+                    referer,
+                    origin,
+                  })
+                }
+              }
+              const strong = Array.from(mediaUrls.values()).some(
+                (c) => c.score >= 140 && /\.m3u8/i.test(c.url)
+              )
+              if (strong) break
+            } catch {
+              // next selector
+            }
+          }
+
+          // Final frame harvest.
+          try {
+            const frameUrls = await tryExtractFromFrames()
+            for (const u of frameUrls) {
+              let referer: string | undefined
+              let origin: string | undefined
+              if (/netoda|embos|voxzer|s1q\d|\/hls\//i.test(u)) {
+                referer = 'https://netoda.tech/'
+                origin = 'https://netoda.tech'
+              }
+              addCandidate({
+                url: u,
+                score: scoreMediaUrl(u) + 50,
+                source: 'dom',
+                referer,
+                origin,
+              })
+            }
+            if (frameUrls.length) {
+              console.log(`[playwright] harvested ${frameUrls.length} URL(s) from player frames`)
+            }
+          } catch {
+            // ignore
+          }
+
+          // Extra settle time for late HLS master requests.
+          await page.waitForTimeout(5000)
+        }
+      } catch (embedErr) {
+        console.warn('[playwright] embed-player bootstrap failed:', (embedErr as Error).message)
       }
 
       // --- Extract media URLs directly from the DOM -------------------------

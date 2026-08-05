@@ -1,5 +1,17 @@
 # Changelog
 
+
+## Unreleased
+
+### Changed
+- Playwright fallback is no longer limited to adult-site hostnames. Empty `PLAYWRIGHT_FALLBACK_SITES` (default) means: **after yt-dlp fails, try the browser on any host**.
+- Default `PLAYWRIGHT_TIMEOUT_MS` raised to `60000` for slower JS embed players.
+
+### Added
+- fmoviess.org / fmovies-style embed player support: click Play, walk Server controls, harvest HLS from player iframes (netoda/JWPlayer), pass player Referer/Origin when downloading.
+- Lightweight ad/tracker request blocking during Playwright extraction to reduce player stalls.
+- Media candidates can carry preferred `referer`/`origin` from the intercepted request.
+
 ## Unreleased
 
 ### Security

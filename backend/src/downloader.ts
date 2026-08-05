@@ -492,16 +492,75 @@ async function downloadWithYtDlp(
 
 function shouldTryPlaywrightFallback(url: string, _errorMessage: string): boolean {
   if (!config.playwrightFallbackEnabled) return false
+
+  // Empty PLAYWRIGHT_FALLBACK_SITES (default) = try browser on ANY yt-dlp failure.
+  // A non-empty value is treated as a hostname regex allowlist.
+  const sites = (config.playwrightFallbackSites || '').trim()
+  if (!sites) return true
+
   try {
-    const regex = new RegExp(config.playwrightFallbackSites, 'i')
-    if (!regex.test(new URL(url).hostname)) return false
+    const regex = new RegExp(sites, 'i')
+    return regex.test(new URL(url).hostname)
   } catch {
-    return false
+    // Bad regex should not silently disable fallback entirely.
+    console.warn(
+      `[downloader] invalid PLAYWRIGHT_FALLBACK_SITES regex "${sites}"; allowing fallback for all hosts`
+    )
+    return true
   }
-  // If the URL's hostname matches the fallback list, always try the browser.
-  // The hostname check is the real gate; relying on error-message heuristics
-  // caused "Unable to extract video URL" errors to skip the fallback.
-  return true
+}
+
+/** Prefer player/CDN origin headers when downloading intercepted media. */
+function resolveMediaHeaders(
+  candidate: { url: string; contentType?: string; referer?: string; origin?: string },
+  pageUrl: string
+): Record<string, string> {
+  let referer = candidate.referer || ''
+  let origin = candidate.origin || ''
+
+  if (!referer) {
+    try {
+      const mediaHost = new URL(candidate.url).hostname.toLowerCase()
+      const mediaUrl = candidate.url.toLowerCase()
+      // fmoviess / netoda / embos player stack serves HLS from third-party CDNs
+      // that require the player origin as Referer, not the film page.
+      if (
+        /netoda\.tech|embos\.|voxzer\.|s1q\d|streamhls|m3u8/i.test(mediaHost) ||
+        /netoda\.tech|\/hls\//i.test(mediaUrl)
+      ) {
+        referer = 'https://netoda.tech/'
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!referer) {
+    try {
+      referer = `https://${new URL(pageUrl).hostname}/`
+    } catch {
+      referer = pageUrl
+    }
+  }
+
+  if (!origin) {
+    try {
+      origin = new URL(referer).origin
+    } catch {
+      origin = referer
+    }
+  }
+
+  const headers: Record<string, string> = {
+    Referer: referer,
+    Origin: origin,
+  }
+  if (config.ytDlpUserAgent) {
+    headers['User-Agent'] = config.ytDlpUserAgent
+  } else if (config.playwrightUserAgent) {
+    headers['User-Agent'] = config.playwrightUserAgent
+  }
+  return headers
 }
 
 function looksLikeDirectMedia(url: string, contentType?: string): boolean {
@@ -635,20 +694,16 @@ async function downloadWithPlaywrightFallback(
   }
 
   const hostname = new URL(pageUrl).hostname
-  const referer = `https://${hostname}/`
 
   for (const candidate of candidates.slice(0, 8)) {
     if (signal.aborted) throw new Error('Download aborted')
 
     console.log(`[downloader] trying fallback candidate: ${candidate.url.slice(0, 150)}`)
 
-    const headers: Record<string, string> = {
-      Referer: referer,
-      Origin: referer,
-    }
-    if (config.ytDlpUserAgent) {
-      headers['User-Agent'] = config.ytDlpUserAgent
-    }
+    const headers = resolveMediaHeaders(candidate, pageUrl)
+    console.log(
+      `[downloader] fallback headers Referer=${headers.Referer} Origin=${headers.Origin}`
+    )
 
     try {
       if (looksLikeDirectMedia(candidate.url, candidate.contentType)) {
@@ -672,11 +727,11 @@ async function downloadWithPlaywrightFallback(
 
       // For HLS/DASH manifests, keep using yt-dlp (it handles fragment fetching).
       const extraArgs: string[] = [
-        '--add-header', `Referer:${referer}`,
-        '--add-header', `Origin:${referer}`,
+        '--add-header', `Referer:${headers.Referer}`,
+        '--add-header', `Origin:${headers.Origin}`,
       ]
-      if (config.ytDlpUserAgent) {
-        extraArgs.push('--user-agent', config.ytDlpUserAgent)
+      if (headers['User-Agent']) {
+        extraArgs.push('--user-agent', headers['User-Agent'])
       }
 
       const baseArgs = await buildBaseArgs()
@@ -715,6 +770,14 @@ async function downloadWithPlaywrightFallback(
         candidates2[0]?.path
 
       if (videoFile) {
+        // Reject tiny HLS remuxes (failed token / preview playlist).
+        const stats = await stat(videoFile)
+        if (stats.size < 200_000) {
+          console.warn(
+            `[downloader] HLS candidate too small (${stats.size} bytes); trying next`
+          )
+          continue
+        }
         return { videoFile, title: pageTitle || `Video from ${hostname}` }
       }
     } catch (err: any) {
