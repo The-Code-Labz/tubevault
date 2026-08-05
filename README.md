@@ -209,6 +209,8 @@ All routes below except `/api/health` require `Authorization: Bearer <supabase-a
 | GET | `/api/videos/:id/stream` | Mint a fresh short-lived signed stream URL (Supabase) or CDN URL (R2) |
 | DELETE | `/api/videos/:id` | Delete video + storage object |
 | POST | `/api/videos/:id/cancel` | Cancel an in-flight download |
+| POST | `/api/videos/:id/retry` | Re-queue a `failed` download using its original URL/backend (409 if not failed or already active) |
+| GET | `/api/videos/:id/download` | Proxy-download a `complete` video as an attachment (forces a browser Save-As regardless of storage backend) |
 
 `POST /api/admin/invite` is a separate admin-only route, gated by the `X-Admin-Key` header instead of a Supabase session — see "Invite-only setup" below.
 

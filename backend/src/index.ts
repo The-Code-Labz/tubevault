@@ -6,7 +6,9 @@ import {
   queueDownload,
   deleteVideo,
   getVideoStreamUrl,
+  getVideoForDownload,
   cancelDownload,
+  retryDownload,
   getYtDlpVersion,
   updateYtDlp,
   shutdownActiveJobs,
@@ -58,9 +60,11 @@ app.get('/api/config', (_req, res) => {
   })
 })
 
-// Admin-only invite endpoint, gated by X-Admin-Key (ADMIN_API_KEY). Deliberately
-// isolated from requireAuth/the /api/videos surface below — see admin.ts.
-app.use('/api/admin', adminRouter)
+// Admin-only invite/cookie-sync endpoints, gated by X-Admin-Key (ADMIN_API_KEY).
+// Deliberately isolated from requireAuth/the /api/videos surface below — see admin.ts.
+// Larger body limit than the default 100kb: a full browser cookie export across
+// several logged-in sites can run a few hundred KB.
+app.use('/api/admin', express.json({ limit: '1mb' }), adminRouter)
 
 // Every /api/videos* route requires a valid Supabase session.
 app.use('/api/videos', requireAuth)
@@ -144,6 +148,48 @@ app.post('/api/videos/:id/cancel', async (req: AuthedRequest, res) => {
       return
     }
     res.json({ cancelled: true })
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Re-queues a failed job (e.g. a SOCKS5 proxy timeout) using its original URL/backend.
+app.post('/api/videos/:id/retry', async (req: AuthedRequest, res) => {
+  try {
+    const video = await retryDownload(req.params.id, req.userId!)
+    if (!video) {
+      res.status(409).json({ error: 'Only failed downloads that are not already active can be retried' })
+      return
+    }
+    res.json(video)
+  } catch (err: any) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Proxies the finished file to the browser as an attachment so "Download" reliably
+// saves to disk regardless of storage backend, instead of opening the video inline.
+app.get('/api/videos/:id/download', async (req: AuthedRequest, res) => {
+  try {
+    const info = await getVideoForDownload(req.params.id, req.userId!)
+    if (!info) {
+      res.status(404).json({ error: 'Video not ready or not found' })
+      return
+    }
+
+    const upstream = await fetch(info.streamUrl)
+    if (!upstream.ok || !upstream.body) {
+      res.status(502).json({ error: `Failed to fetch video from storage: ${upstream.status}` })
+      return
+    }
+
+    res.setHeader('Content-Type', info.contentType)
+    res.setHeader('Content-Disposition', `attachment; filename="${info.filename}"`)
+    const contentLength = upstream.headers.get('content-length')
+    if (contentLength) res.setHeader('Content-Length', contentLength)
+
+    const { Readable } = await import('node:stream')
+    Readable.fromWeb(upstream.body as any).pipe(res)
   } catch (err: any) {
     res.status(500).json({ error: err.message })
   }

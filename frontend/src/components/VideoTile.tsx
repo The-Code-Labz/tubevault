@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, Clock, Download, Play, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Clock, Download, Play, RotateCcw, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
 import { MediaPlaceholder } from './MediaPlaceholder.tsx'
 import { ProgressRail } from './ProgressRail.tsx'
 import { STATUS_META, hasProgress } from '../lib/status.ts'
@@ -38,9 +38,23 @@ interface VideoTileProps {
   video: Video
   onPlay: (video: Video) => void
   onRequestDelete: (video: Video) => void
+  onRetry: (video: Video) => void
+  onDownload: (video: Video) => void
+  retrying?: boolean
+  downloading?: boolean
+  actionError?: string | null
 }
 
-export function VideoTile({ video, onPlay, onRequestDelete }: VideoTileProps) {
+export function VideoTile({
+  video,
+  onPlay,
+  onRequestDelete,
+  onRetry,
+  onDownload,
+  retrying = false,
+  downloading = false,
+  actionError = null,
+}: VideoTileProps) {
   const meta = STATUS_META[video.status]
   const isReady = video.status === 'complete'
   const isFailed = video.status === 'failed'
@@ -94,9 +108,19 @@ export function VideoTile({ video, onPlay, onRequestDelete }: VideoTileProps) {
         ) : isQueued ? (
           <p className="font-mono text-xs text-paper-muted">{meta.label}</p>
         ) : isFailed ? (
-          <p role="status" className="text-xs text-danger">
-            {video.error || 'Ingest failed for an unknown reason.'}
-          </p>
+          <div role="status" className="flex flex-col gap-1.5">
+            <p className="text-xs text-danger">{video.error || 'Ingest failed for an unknown reason.'}</p>
+            <button
+              type="button"
+              onClick={() => onRetry(video)}
+              disabled={retrying}
+              className="inline-flex w-fit items-center gap-1.5 rounded-md border border-border-strong px-2.5 py-1 font-mono text-[11px] text-paper transition hover:border-gold hover:text-gold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RotateCcw size={12} aria-hidden="true" className={retrying ? 'animate-spin' : undefined} />
+              {retrying ? 'Retrying…' : 'Retry'}
+            </button>
+            {actionError ? <p className="text-[11px] text-danger">{actionError}</p> : null}
+          </div>
         ) : (
           <p className="truncate font-mono text-xs text-paper-muted">
             {formatBackendLabel(video.storageBackend)}
@@ -108,14 +132,28 @@ export function VideoTile({ video, onPlay, onRequestDelete }: VideoTileProps) {
           <span className="min-w-0 truncate font-mono text-[11px] text-paper-subtle" title={video.url}>
             {hostnameOf(video.url)}
           </span>
-          <button
-            type="button"
-            onClick={() => onRequestDelete(video)}
-            aria-label={`Delete ${title}`}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-paper-subtle transition hover:bg-danger/15 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
-          >
-            <Trash2 size={16} aria-hidden="true" />
-          </button>
+          <div className="flex shrink-0 items-center">
+            {isReady ? (
+              <button
+                type="button"
+                onClick={() => onDownload(video)}
+                disabled={downloading}
+                aria-label={`Download ${title}`}
+                title="Download to this device"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-paper-subtle transition hover:bg-gold/15 hover:text-gold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Download size={16} aria-hidden="true" className={downloading ? 'animate-pulse' : undefined} />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => onRequestDelete(video)}
+              aria-label={`Delete ${title}`}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-paper-subtle transition hover:bg-danger/15 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
+            >
+              <Trash2 size={16} aria-hidden="true" />
+            </button>
+          </div>
         </div>
       </div>
     </article>

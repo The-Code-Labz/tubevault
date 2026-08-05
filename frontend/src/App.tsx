@@ -26,6 +26,9 @@ export default function App() {
   const [confirmTarget, setConfirmTarget] = useState<Video | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [filter, setFilter] = useState<FilterKey>('all')
+  const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set())
+  const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set())
+  const [actionErrors, setActionErrors] = useState<Record<string, string>>({})
 
   async function loadVideos() {
     try {
@@ -55,6 +58,9 @@ export default function App() {
     setPlaying(null)
     setConfirmTarget(null)
     setDeleteBusy(false)
+    setRetryingIds(new Set())
+    setDownloadingIds(new Set())
+    setActionErrors({})
   }, [userId])
 
   useEffect(() => {
@@ -77,6 +83,45 @@ export default function App() {
       return false
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  async function handleRetry(video: Video) {
+    setRetryingIds((prev) => new Set(prev).add(video.id))
+    setActionErrors((prev) => {
+      const { [video.id]: _omit, ...rest } = prev
+      return rest
+    })
+    try {
+      await api.retryVideo(video.id)
+      await loadVideos()
+    } catch (err: any) {
+      setActionErrors((prev) => ({ ...prev, [video.id]: err.message }))
+    } finally {
+      setRetryingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(video.id)
+        return next
+      })
+    }
+  }
+
+  async function handleDownload(video: Video) {
+    setDownloadingIds((prev) => new Set(prev).add(video.id))
+    setActionErrors((prev) => {
+      const { [video.id]: _omit, ...rest } = prev
+      return rest
+    })
+    try {
+      await api.downloadVideo(video.id)
+    } catch (err: any) {
+      setActionErrors((prev) => ({ ...prev, [video.id]: err.message }))
+    } finally {
+      setDownloadingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(video.id)
+        return next
+      })
     }
   }
 
@@ -168,7 +213,17 @@ export default function App() {
           ) : (
             <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(240px,1fr))]">
               {filtered.map((video) => (
-                <VideoTile key={video.id} video={video} onPlay={setPlaying} onRequestDelete={setConfirmTarget} />
+                <VideoTile
+                  key={video.id}
+                  video={video}
+                  onPlay={setPlaying}
+                  onRequestDelete={setConfirmTarget}
+                  onRetry={handleRetry}
+                  onDownload={handleDownload}
+                  retrying={retryingIds.has(video.id)}
+                  downloading={downloadingIds.has(video.id)}
+                  actionError={actionErrors[video.id] ?? null}
+                />
               ))}
             </div>
           )}

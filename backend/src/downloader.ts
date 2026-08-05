@@ -332,6 +332,32 @@ export async function queueDownload(url: string, backend: StorageBackend, userId
   return video
 }
 
+/**
+ * Re-queues a previously failed download (e.g. a SOCKS5 proxy timeout) using the
+ * video's original URL/backend. Only failed jobs are eligible — active jobs already
+ * have a running controller in `activeJobs`, and re-scheduling one would spawn a
+ * second concurrent yt-dlp process for the same id.
+ */
+export async function retryDownload(id: string, userId: string): Promise<Video | null> {
+  const video = await db.get(id)
+  if (!video || video.userId !== userId) return null
+  if (video.status !== 'failed') return null
+  if (activeJobs.has(id)) return null
+
+  const updated = await db.update(id, {
+    status: 'queued',
+    progress: 0,
+    error: null,
+  })
+  if (!updated) return null
+
+  const controller = new AbortController()
+  activeJobs.set(id, { controller })
+  scheduleDownload(id, video.url, video.storageBackend, controller)
+
+  return updated
+}
+
 function scheduleDownload(id: string, url: string, backend: StorageBackend, controller: AbortController): void {
   acquireSlot()
     .then(() => {
@@ -837,6 +863,26 @@ export async function getVideoStreamUrl(id: string, userId: string): Promise<str
   if (!video || video.userId !== userId || !video.storageKey) return null
   const provider = await createStorageProvider(video.storageBackend)
   return provider.getStreamUrl(video.storageKey)
+}
+
+/**
+ * Resolves the info needed to proxy-download a completed video to the browser as an
+ * attachment. Proxying through our own server (rather than just handing back the raw
+ * storage URL) guarantees a Content-Disposition: attachment response regardless of
+ * which storage backend is in use — the R2 provider's URL is a plain public link with
+ * no signed-URL download-param support, so redirecting the browser there would just
+ * open/stream the video inline instead of saving it.
+ */
+export async function getVideoForDownload(
+  id: string,
+  userId: string
+): Promise<{ streamUrl: string; filename: string; contentType: string } | null> {
+  const video = await db.get(id)
+  if (!video || video.userId !== userId || !video.storageKey || video.status !== 'complete') return null
+  const provider = await createStorageProvider(video.storageBackend)
+  const streamUrl = await provider.getStreamUrl(video.storageKey)
+  const filename = `${sanitizeFilename(video.title || 'video')}.mp4`
+  return { streamUrl, filename, contentType: 'video/mp4' }
 }
 
 /** Best-effort abort of every in-flight download; used on graceful shutdown. */
