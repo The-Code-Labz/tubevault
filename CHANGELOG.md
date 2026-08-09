@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Playwright + authenticated SOCKS5:** Chromium rejects `socks5://user:pass@…` with `Browser does not support socks5 proxy authentication`. TubeVault now auto-bridges authenticated SOCKS5 through a local no-auth HTTP proxy (`proxy-chain`) for Playwright only. yt-dlp and Node direct downloads still use the original SOCKS5 URL with credentials.
+- Direct downloads through an **HTTP(S)** upstream proxy no longer incorrectly construct a `SocksProxyAgent` (now uses `HttpsProxyAgent`).
 
 ## Unreleased
 

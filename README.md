@@ -160,12 +160,16 @@ By default the fallback runs on **any hostname** after yt-dlp fails (`PLAYWRIGHT
      ```bash
      PLAYWRIGHT_PROXY_SERVER=socks5://user:pass@host:1080
      ```
-     TubeVault will automatically pass this proxy to yt-dlp (`--proxy`) and to Chromium (with credentials split out), and it will route direct MP4 downloads through the same proxy. Check the container logs for a line like:
+     TubeVault passes this URL to yt-dlp (`--proxy`) and to Node's direct-download agent as-is. **Chromium cannot authenticate SOCKS5** (it throws `Browser does not support socks5 proxy authentication`), so for `socks5://user:pass@…` TubeVault automatically starts a short-lived local HTTP bridge via [`proxy-chain`](https://github.com/apify/proxy-chain). Chromium talks to `http://127.0.0.1:<port>` with no credentials; the bridge authenticates upstream. No-auth SOCKS5 and HTTP(S) proxies (with or without auth) are passed to Chromium natively.
+
+     Check the container logs for lines like:
      ```
+     [proxy] SOCKS5 auth is unsupported by Chromium — bridging via local http://127.0.0.1:XXXX → socks5://host:1080
+     [playwright] using bridged proxy: http://127.0.0.1:XXXX
      [playwright] egress IP via api.ipify.org: {"ip":"1.2.3.4"}
      ```
      If that IP is still in Arizona (or wherever the block applies), the proxy itself is routing through that region — try a different proxy exit.
-   - Make sure your proxy actually carries DNS through the tunnel. TubeVault forces Chromium DNS over SOCKS5 when the protocol is `socks5://`. For HTTP proxies, DNS may still leak; prefer SOCKS5.
+   - Make sure your proxy actually carries DNS through the tunnel. TubeVault forces Chromium DNS through the proxy for SOCKS5 (and for the auth bridge). Loopback is excluded so Chromium can still reach the local bridge. For plain HTTP proxies, DNS may still leak; prefer SOCKS5.
 4. **Debug a URL quickly.** SSH into the container/server and run:
    ```bash
    yt-dlp --dump-single-json --cookies-from-browser firefox "https://..."

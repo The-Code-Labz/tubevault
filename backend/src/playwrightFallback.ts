@@ -1,6 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type Page, type Response, type Cookie } from 'playwright'
 import { config } from './config.js'
-import { getProxy } from './proxy.js'
+import { getProxy, preparePlaywrightProxy, type PlaywrightProxyHandle } from './proxy.js'
 import { writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
@@ -350,6 +350,9 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
   let title = ''
   let browser: Browser | null = null
   let context: BrowserContext | null = null
+  // Local proxy-chain bridge for authenticated SOCKS5 (Chromium cannot auth SOCKS natively).
+  // Must be closed in every exit path so we don't leak ephemeral listeners.
+  let pwProxy: PlaywrightProxyHandle | null = null
 
   function addCandidate(candidate: MediaCandidate) {
     const existing = mediaUrls.get(candidate.url)
@@ -366,10 +369,29 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
   try {
     const proxy = getProxy()
     if (proxy) {
-      console.log(`[playwright] using proxy: ${proxy.serverUrl} (auth=${proxy.hasAuth})`)
+      console.log(
+        `[playwright] upstream proxy: ${proxy.serverUrl} (auth=${proxy.hasAuth}, socks=${proxy.isSocks})`
+      )
     } else if (config.playwrightProxyServer) {
       console.warn(`[playwright] PLAYWRIGHT_PROXY_SERVER is set but could not be parsed: "${config.playwrightProxyServer}"`)
     }
+
+    // Convert authenticated SOCKS5 → local no-auth HTTP bridge when needed.
+    // Throws if the bridge cannot start (better than the cryptic Chromium error).
+    pwProxy = await preparePlaywrightProxy(proxy)
+    if (pwProxy?.bridged) {
+      console.log(`[playwright] using bridged proxy: ${pwProxy.serverUrl}`)
+    } else if (pwProxy) {
+      console.log(`[playwright] using native proxy: ${pwProxy.serverUrl}`)
+    }
+
+    // When Chromium talks to a local bridge, loopback hosts must stay resolvable.
+    // For direct SOCKS5 (no auth) we still force remote DNS through the tunnel.
+    const dnsExclude = ['localhost', '127.0.0.1', '::1', ...((pwProxy?.excludeHosts) || [])]
+    const uniqueExclude = Array.from(new Set(dnsExclude))
+    const forceProxyDns =
+      !!proxy &&
+      (proxy.isSocks || pwProxy?.bridged) // bridged path still tunnels remote DNS via upstream SOCKS
 
     const launchArgs: string[] = [
       '--disable-blink-features=AutomationControlled',
@@ -377,10 +399,11 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
       '--disable-features=IsolateOrigins,site-per-process',
       '--disable-dev-shm-usage',
       '--no-sandbox',
-      ...(proxy ? [`--proxy-server=${proxy.serverUrl}`] : []),
-      // Force all DNS resolution through the proxy so the site can't see our real IP/location.
-      ...(proxy?.serverUrl.startsWith('socks5')
-        ? ['--host-resolver-rules="MAP * ~NOTFOUND , EXCLUDE localhost"']
+      // Prefer Playwright context.proxy (set below). --proxy-server is a belt-and-suspenders
+      // fallback for stealth plugins that may ignore context options. Never embed credentials.
+      ...(pwProxy ? [`--proxy-server=${pwProxy.serverUrl}`] : []),
+      ...(forceProxyDns
+        ? [`--host-resolver-rules=MAP * ~NOTFOUND , ${uniqueExclude.map((h) => `EXCLUDE ${h}`).join(' ')}`]
         : []),
       ...config.playwrightExtraArgs,
     ]
@@ -399,18 +422,22 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
         browser = await stealthChromium.launch({
           headless: config.playwrightHeadless,
           args: launchArgs,
+          // Also pass proxy at launch for stealth path consistency.
+          ...(pwProxy ? { proxy: pwProxy.playwrightProxy } : {}),
         })
       } catch (stealthErr) {
         console.warn('[playwright] stealth plugin unavailable, using standard chromium:', (stealthErr as Error).message)
         browser = await chromium.launch({
           headless: config.playwrightHeadless,
           args: launchArgs,
+          ...(pwProxy ? { proxy: pwProxy.playwrightProxy } : {}),
         })
       }
     } else {
       browser = await chromium.launch({
         headless: config.playwrightHeadless,
         args: launchArgs,
+        ...(pwProxy ? { proxy: pwProxy.playwrightProxy } : {}),
       })
     }
 
@@ -424,7 +451,8 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
       locale: 'en-US',
       viewport: { width: 1920, height: 1080 },
-      ...(proxy ? { proxy: proxy.playwrightProxy } : {}),
+      // Playwright-safe proxy: either native HTTP/SOCKS-noauth, or local bridge URL.
+      ...(pwProxy ? { proxy: pwProxy.playwrightProxy } : {}),
     })
 
     if (config.playwrightCookiesFile) {
@@ -616,6 +644,8 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
     const abortListener = () => {
       console.log('[playwright] abort signal received, closing browser')
       browser?.close().catch(() => {})
+      // Bridge is closed in the outer catch/success paths; do not double-close here
+      // because closeAnonymizedProxy is async and abort may race with normal teardown.
     }
     signal?.addEventListener('abort', abortListener)
 
@@ -1195,6 +1225,8 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
 
     await context?.close().catch(() => {})
     await browser?.close().catch(() => {})
+    await pwProxy?.close().catch(() => {})
+    pwProxy = null
 
     console.log(`[playwright] found ${candidates.length} media candidate(s) for ${pageUrl}`)
     return { candidates, cookies, title }
@@ -1202,6 +1234,8 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
     console.error('[playwright] extraction failed:', (err as Error).message)
     await context?.close().catch(() => {})
     await browser?.close().catch(() => {})
+    await pwProxy?.close().catch(() => {})
+    pwProxy = null
     throw err
   }
 }
