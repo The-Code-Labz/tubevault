@@ -4,6 +4,7 @@
 
 ### Fixed
 - **Playwright + authenticated SOCKS5:** Chromium rejects `socks5://user:pass@…` with `Browser does not support socks5 proxy authentication`. TubeVault now auto-bridges authenticated SOCKS5 through a local no-auth HTTP proxy (`proxy-chain`) for Playwright only. yt-dlp and Node direct downloads still use the original SOCKS5 URL with credentials.
+- **Bridged SOCKS5 `net::ERR_PROXY_CONNECTION_FAILED`:** the bridge path no longer applies Chromium `--host-resolver-rules=MAP * ~NOTFOUND` (that was intended for native SOCKS only). A space-joined `EXCLUDE` list was also invalid — Chromium requires comma-separated rules — which could blackhole `127.0.0.1` and make every page load fail before traffic hit the bridge. Bridged upstream now uses `socks5h` for remote DNS, and CONNECT is preflighted so upstream/auth failures surface clearly instead of as opaque proxy errors.
 - Direct downloads through an **HTTP(S)** upstream proxy no longer incorrectly construct a `SocksProxyAgent` (now uses `HttpsProxyAgent`).
 
 ## Unreleased

@@ -1,6 +1,11 @@
 import { chromium, type Browser, type BrowserContext, type Page, type Response, type Cookie } from 'playwright'
 import { config } from './config.js'
-import { getProxy, preparePlaywrightProxy, type PlaywrightProxyHandle } from './proxy.js'
+import {
+  buildHostResolverRules,
+  getProxy,
+  preparePlaywrightProxy,
+  type PlaywrightProxyHandle,
+} from './proxy.js'
 import { writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
@@ -385,13 +390,14 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
       console.log(`[playwright] using native proxy: ${pwProxy.serverUrl}`)
     }
 
-    // When Chromium talks to a local bridge, loopback hosts must stay resolvable.
-    // For direct SOCKS5 (no auth) we still force remote DNS through the tunnel.
-    const dnsExclude = ['localhost', '127.0.0.1', '::1', ...((pwProxy?.excludeHosts) || [])]
-    const uniqueExclude = Array.from(new Set(dnsExclude))
-    const forceProxyDns =
-      !!proxy &&
-      (proxy.isSocks || pwProxy?.bridged) // bridged path still tunnels remote DNS via upstream SOCKS
+    // Force remote DNS through the proxy ONLY for native SOCKS.
+    // Bridged authenticated SOCKS uses a local HTTP proxy; HTTP CONNECT already
+    // carries hostnames, and MAP * ~NOTFOUND must never apply there — a broken
+    // EXCLUDE list blackholes 127.0.0.1 and yields net::ERR_PROXY_CONNECTION_FAILED.
+    const forceProxyDns = !!pwProxy?.forceProxyDns
+    const hostResolverRules = forceProxyDns
+      ? buildHostResolverRules(pwProxy?.excludeHosts || [])
+      : ''
 
     const launchArgs: string[] = [
       '--disable-blink-features=AutomationControlled',
@@ -402,11 +408,17 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
       // Prefer Playwright context.proxy (set below). --proxy-server is a belt-and-suspenders
       // fallback for stealth plugins that may ignore context options. Never embed credentials.
       ...(pwProxy ? [`--proxy-server=${pwProxy.serverUrl}`] : []),
-      ...(forceProxyDns
-        ? [`--host-resolver-rules=MAP * ~NOTFOUND , ${uniqueExclude.map((h) => `EXCLUDE ${h}`).join(' ')}`]
-        : []),
+      ...(hostResolverRules ? [`--host-resolver-rules=${hostResolverRules}`] : []),
       ...config.playwrightExtraArgs,
     ]
+
+    if (forceProxyDns) {
+      console.log(`[playwright] host-resolver-rules: ${hostResolverRules}`)
+    } else if (pwProxy?.bridged) {
+      console.log(
+        '[playwright] bridged HTTP proxy — skipping host-resolver-rules (DNS via upstream SOCKS5h)'
+      )
+    }
 
     if (config.playwrightStealth) {
       try {

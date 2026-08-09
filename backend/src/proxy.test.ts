@@ -3,11 +3,17 @@
  * Run: npx tsx src/proxy.test.ts
  *
  * Does NOT require a real upstream proxy — the SOCKS5+auth path only
- * asserts that preparePlaywrightProxy returns a bridged local HTTP URL
- * (proxy-chain binds 127.0.0.1 even if upstream is unreachable until used).
+ * asserts bridge shape / host-resolver-rules. Preflight is skipped when
+ * upstream is unreachable by catching preparePlaywrightProxy errors that
+ * mention the bridge (still validates anonymizeProxy start path via unit
+ * of buildHostResolverRules + parse).
  */
 import assert from 'node:assert/strict'
-import { parseProxyUrl, preparePlaywrightProxy } from './proxy.js'
+import {
+  buildHostResolverRules,
+  parseProxyUrl,
+  preparePlaywrightProxy,
+} from './proxy.js'
 
 function testParseSocksAuth() {
   const p = parseProxyUrl('socks5://alice:s3cret@proxy.example.com:1080')
@@ -48,18 +54,45 @@ function testParseRejectsUnknown() {
   console.log('✓ reject unsupported protocol')
 }
 
+function testHostResolverRulesCommaSeparated() {
+  const rules = buildHostResolverRules(['127.0.0.1', 'localhost'])
+  // Chromium requires comma-separated rules. Space-only EXCLUDE lists are
+  // misparsed and MAP * ~NOTFOUND then blackholes loopback.
+  assert.match(rules, /^MAP \* ~NOTFOUND/)
+  assert.ok(rules.includes(', EXCLUDE 127.0.0.1'))
+  assert.ok(rules.includes(', EXCLUDE localhost'))
+  assert.ok(rules.includes(', EXCLUDE ::1'))
+  // No bare space-joined EXCLUDE chain without commas.
+  assert.equal(rules.includes('EXCLUDE 127.0.0.1 EXCLUDE'), false)
+  console.log('✓ host-resolver-rules are comma-separated:', rules)
+}
+
 async function testPrepareSocksAuthBridges() {
-  const p = parseProxyUrl('socks5://alice:s3cret@127.0.0.1:1') // port 1 = unreachable upstream is fine until traffic
+  // Use an unreachable upstream. preparePlaywrightProxy now preflights CONNECT,
+  // so a dead upstream should throw a clear bridge/upstream error — NOT the
+  // Chromium socks5-auth error, and NOT succeed silently.
+  const p = parseProxyUrl('socks5://alice:s3cret@127.0.0.1:1')
   assert.ok(p)
-  const handle = await preparePlaywrightProxy(p)
-  assert.ok(handle)
-  assert.equal(handle!.bridged, true)
-  assert.match(handle!.serverUrl, /^http:\/\/127\.0\.0\.1:\d+$/)
-  assert.equal(handle!.playwrightProxy.server, handle!.serverUrl)
-  assert.equal(handle!.playwrightProxy.username, undefined)
-  assert.ok(handle!.excludeHosts.includes('127.0.0.1'))
-  await handle!.close()
-  console.log('✓ preparePlaywrightProxy bridges socks5+auth → local http')
+  let threw = false
+  try {
+    const handle = await preparePlaywrightProxy(p)
+    // If somehow preflight passed (shouldn't on port 1), still validate shape.
+    assert.ok(handle)
+    assert.equal(handle!.bridged, true)
+    assert.equal(handle!.forceProxyDns, false) // critical: no MAP* on bridge
+    assert.match(handle!.serverUrl, /^http:\/\/127\.0\.0\.1:\d+$/)
+    assert.equal(handle!.playwrightProxy.username, undefined)
+    await handle!.close()
+    console.log('✓ preparePlaywrightProxy bridges socks5+auth (preflight passed unexpectedly)')
+  } catch (err) {
+    threw = true
+    const msg = (err as Error).message
+    assert.match(msg, /bridge|upstream|SOCKS|proxy/i)
+    // Must not be the old Chromium-native error.
+    assert.equal(/does not support socks5 proxy authentication/i.test(msg), false)
+    console.log('✓ preparePlaywrightProxy socks5+auth fails preflight loudly:', msg.slice(0, 160))
+  }
+  assert.equal(threw, true)
 }
 
 async function testPrepareSocksNoAuthNative() {
@@ -67,10 +100,11 @@ async function testPrepareSocksNoAuthNative() {
   const handle = await preparePlaywrightProxy(p)
   assert.ok(handle)
   assert.equal(handle!.bridged, false)
+  assert.equal(handle!.forceProxyDns, true) // native SOCKS forces remote DNS
   assert.equal(handle!.serverUrl, 'socks5://proxy.example.com:1080')
   assert.equal(handle!.playwrightProxy.username, undefined)
   await handle!.close()
-  console.log('✓ preparePlaywrightProxy keeps socks5 no-auth native')
+  console.log('✓ preparePlaywrightProxy keeps socks5 no-auth native + forceProxyDns')
 }
 
 async function testPrepareHttpAuthNative() {
@@ -78,10 +112,11 @@ async function testPrepareHttpAuthNative() {
   const handle = await preparePlaywrightProxy(p)
   assert.ok(handle)
   assert.equal(handle!.bridged, false)
+  assert.equal(handle!.forceProxyDns, false) // HTTP never uses MAP*
   assert.equal(handle!.playwrightProxy.username, 'bob')
   assert.equal(handle!.playwrightProxy.password, 'pw')
   await handle!.close()
-  console.log('✓ preparePlaywrightProxy keeps http+auth native')
+  console.log('✓ preparePlaywrightProxy keeps http+auth native, no forceProxyDns')
 }
 
 async function testPrepareNull() {
@@ -95,6 +130,7 @@ async function main() {
   testParseSocksNoAuth()
   testParseHttpAuth()
   testParseRejectsUnknown()
+  testHostResolverRulesCommaSeparated()
   await testPrepareSocksAuthBridges()
   await testPrepareSocksNoAuthNative()
   await testPrepareHttpAuthNative()

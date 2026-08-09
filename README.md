@@ -165,11 +165,14 @@ By default the fallback runs on **any hostname** after yt-dlp fails (`PLAYWRIGHT
      Check the container logs for lines like:
      ```
      [proxy] SOCKS5 auth is unsupported by Chromium — bridging via local http://127.0.0.1:XXXX → socks5://host:1080
+     [proxy] bridge preflight OK (CONNECT example.com:443 via http://127.0.0.1:XXXX)
      [playwright] using bridged proxy: http://127.0.0.1:XXXX
+     [playwright] bridged HTTP proxy — skipping host-resolver-rules (DNS via upstream SOCKS5h)
      [playwright] egress IP via api.ipify.org: {"ip":"1.2.3.4"}
      ```
      If that IP is still in Arizona (or wherever the block applies), the proxy itself is routing through that region — try a different proxy exit.
-   - Make sure your proxy actually carries DNS through the tunnel. TubeVault forces Chromium DNS through the proxy for SOCKS5 (and for the auth bridge). Loopback is excluded so Chromium can still reach the local bridge. For plain HTTP proxies, DNS may still leak; prefer SOCKS5.
+     If you see `net::ERR_PROXY_CONNECTION_FAILED` or a preflight error about upstream SOCKS, the container cannot reach `host:1080` (NetBird/firewall/bind) or auth failed — yt-dlp working does **not** guarantee the Node bridge can dial the same path if credentials/DNS differ.
+   - DNS: for **native no-auth SOCKS**, Chromium forces remote DNS via `--host-resolver-rules` (comma-separated `EXCLUDE` list so loopback still resolves). For the **auth bridge**, Chromium talks to a local HTTP proxy and must **not** use `MAP * ~NOTFOUND` (that blackholes `127.0.0.1` and causes `ERR_PROXY_CONNECTION_FAILED`); destination DNS is handled by the bridge over `socks5h`. Prefer SOCKS5 over plain HTTP proxies.
 4. **Debug a URL quickly.** SSH into the container/server and run:
    ```bash
    yt-dlp --dump-single-json --cookies-from-browser firefox "https://..."
