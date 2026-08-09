@@ -69,6 +69,14 @@ export const config = {
   ytDlpCookiesFile: process.env.YTDLP_COOKIES_FILE || '',
   ytDlpReferer: process.env.YTDLP_REFERER || '',
   ytDlpCustomArgs: parseCustomArgs(process.env.YTDLP_CUSTOM_ARGS),
+  /**
+   * TLS fingerprint impersonation for yt-dlp (requires curl_cffi in the image).
+   * Default `chrome` — PornHub and many adult extractors return HTTP 410 without it.
+   * Set empty string to disable: YTDLP_IMPERSONATE=
+   */
+  ytDlpImpersonate: process.env.YTDLP_IMPERSONATE === undefined
+    ? 'chrome'
+    : process.env.YTDLP_IMPERSONATE.trim(),
 
   // Playwright fallback for any site yt-dlp cannot handle (JS players, age gates, HLS embeds).
   // When yt-dlp fails, TubeVault launches Chromium, intercepts network traffic,

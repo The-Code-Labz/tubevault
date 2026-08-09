@@ -114,6 +114,7 @@ npm start
 | `YTDLP_COOKIES_FILE` | No | Path to a Netscape cookies.txt (inside container) |
 | `YTDLP_REFERER` | No | Force a Referer header |
 | `YTDLP_CUSTOM_ARGS` | No | Extra args passed to yt-dlp |
+| `YTDLP_IMPERSONATE` | No | TLS fingerprint target for yt-dlp (default `chrome`; requires `curl_cffi`). Set empty to disable. Fixes PornHub HTTP 410 |
 | `PLAYWRIGHT_FALLBACK_ENABLED` | No | Browser fallback when yt-dlp fails (default `true`) |
 | `PLAYWRIGHT_FALLBACK_SITES` | No | Optional hostname regex allowlist. **Empty (default) = try fallback on any host** after yt-dlp fails |
 | `PLAYWRIGHT_HEADLESS` | No | Run Chromium headless (default `true`) |
@@ -143,7 +144,7 @@ By default the fallback runs on **any hostname** after yt-dlp fails (`PLAYWRIGHT
 
 ### Tips for hard sites
 
-1. **Keep yt-dlp up to date.** TubeVault runs `yt-dlp -U` on startup by default. Site extractors break frequently.
+1. **Keep yt-dlp up to date.** TubeVault runs `yt-dlp -U` on startup by default. Site extractors break frequently. The Docker image also installs **`curl_cffi`** so `--impersonate chrome` works (default via `YTDLP_IMPERSONATE`). Without it, PornHub often returns **HTTP 410 Gone** even when the proxy path is fine.
 2. **Cookies / age gate.** The Playwright fallback now tries to click common age-gate buttons automatically. If it still downloads a short "age verification" preview, the cookies you exported probably don't include the age-verified token. Export cookies **after** you have clicked "Enter / I am 18" in your browser:
    ```bash
    # Drop your exported cookies at ./data/cookies.txt (or ./data/cookies.json) on the host
@@ -171,7 +172,10 @@ By default the fallback runs on **any hostname** after yt-dlp fails (`PLAYWRIGHT
      [playwright] egress IP via api.ipify.org: {"ip":"1.2.3.4"}
      ```
      If that IP is still in Arizona (or wherever the block applies), the proxy itself is routing through that region — try a different proxy exit.
-     If you see `net::ERR_PROXY_CONNECTION_FAILED` or a preflight error about upstream SOCKS, the container cannot reach `host:1080` (NetBird/firewall/bind) or auth failed — yt-dlp working does **not** guarantee the Node bridge can dial the same path if credentials/DNS differ.
+     If you see `net::ERR_PROXY_CONNECTION_FAILED` or a preflight error about upstream SOCKS, check **both** TubeVault and SOCKS daemon logs:
+     - TubeVault `[proxy] Node egress probe OK …` / `bridge preflight OK` → local bridge + SOCKS auth work.
+     - SOCKS `Connection from allowed IP` then `splice: connection reset by peer` to `66.254.114.41` / `208.99.84.*` (PornHub / Reflected Networks CDN) → **the exit IP is being RST'd by the site**, not a Chromium/auth bug. Switch to a residential exit, another region, or the provider's HTTP endpoint.
+     - No SOCKS "allowed IP" line → container cannot reach `host:1080` (NetBird/firewall/bind) or credentials failed.
    - DNS: for **native no-auth SOCKS**, Chromium forces remote DNS via `--host-resolver-rules` (comma-separated `EXCLUDE` list so loopback still resolves). For the **auth bridge**, Chromium talks to a local HTTP proxy and must **not** use `MAP * ~NOTFOUND` (that blackholes `127.0.0.1` and causes `ERR_PROXY_CONNECTION_FAILED`); destination DNS is handled by the bridge over `socks5h`. Prefer SOCKS5 over plain HTTP proxies.
 4. **Debug a URL quickly.** SSH into the container/server and run:
    ```bash

@@ -24,9 +24,15 @@ RUN apt-get update && apt-get install -y \
     libatspi2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --break-system-packages yt-dlp || pip3 install yt-dlp
+# curl_cffi enables yt-dlp --impersonate (TLS fingerprint). PornHub and similar
+# return HTTP 410 / bot walls to plain Python urllib; Chrome impersonation fixes that.
+RUN pip3 install --break-system-packages "yt-dlp[default,curl-cffi]" \
+    || pip3 install --break-system-packages yt-dlp curl_cffi \
+    || pip3 install yt-dlp curl_cffi
 # Ensure yt-dlp is on PATH and up-to-date at build time
 RUN yt-dlp -U || true
+# Log impersonation support so missing curl_cffi is obvious in build logs
+RUN yt-dlp --list-impersonate-targets || true
 
 WORKDIR /app
 

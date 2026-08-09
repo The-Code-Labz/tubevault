@@ -368,3 +368,160 @@ export async function tcpReachable(host: string, port: number, timeoutMs = 5000)
     socket.on('error', () => done(false))
   })
 }
+
+export interface ProxyEgressProbeResult {
+  ok: boolean
+  /** Egress IP string when readable (ipify / plain body). */
+  egressIp?: string
+  /** Which probe URL succeeded. */
+  via?: string
+  /** Human-readable failure (proxy auth, RST, timeout, HTTP status). */
+  error?: string
+  /** Raw body snippet for logs. */
+  bodySnippet?: string
+}
+
+/**
+ * Probe real HTTPS egress through the configured upstream proxy (SOCKS or HTTP)
+ * using Node's agent — same path yt-dlp / direct downloads use.
+ *
+ * Distinguishes:
+ *  - proxy reachable + auth OK + destination accepts TLS  → ok + egress IP
+ *  - proxy OK but destination RSTs / times out            → ok=false with RST hint
+ *  - proxy unreachable / auth fail                        → ok=false with agent error
+ *
+ * SOCKS server logs like:
+ *   readfrom …->66.254.114.41:443: splice: connection reset by peer
+ * mean the *destination* closed the tunnel after CONNECT succeeded. That is
+ * NOT Chromium bridge failure and NOT SOCKS auth failure — the exit IP is
+ * being rejected by the target CDN.
+ */
+export async function probeProxyEgress(
+  proxy: ParsedProxy,
+  options: { timeoutMs?: number; urls?: string[] } = {}
+): Promise<ProxyEgressProbeResult> {
+  const timeoutMs = options.timeoutMs ?? 15_000
+  const urls =
+    options.urls ??
+    [
+      'https://api.ipify.org?format=json',
+      'https://httpbin.org/ip',
+      'https://checkip.amazonaws.com/',
+    ]
+
+  let lastError = 'no probe URLs attempted'
+
+  for (const url of urls) {
+    try {
+      const result = await new Promise<ProxyEgressProbeResult>((resolve) => {
+        const parsed = new URL(url)
+        const requestModule = parsed.protocol === 'https:' ? https : http
+        const req = requestModule.get(
+          url,
+          {
+            agent: proxy.agent,
+            timeout: timeoutMs,
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+              Accept: '*/*',
+            },
+          },
+          (res) => {
+            const chunks: Buffer[] = []
+            res.on('data', (c) => {
+              if (Buffer.concat(chunks).length < 4096) chunks.push(c)
+            })
+            res.on('end', () => {
+              const body = Buffer.concat(chunks).toString('utf8').trim()
+              const status = res.statusCode || 0
+              if (status < 200 || status >= 300) {
+                resolve({
+                  ok: false,
+                  error: `HTTP ${status} from ${parsed.hostname} via proxy ${proxy.serverUrl}`,
+                  bodySnippet: body.slice(0, 200),
+                  via: url,
+                })
+                return
+              }
+              let egressIp: string | undefined
+              try {
+                const json = JSON.parse(body)
+                egressIp = String(json.ip || json.origin || '').split(',')[0]?.trim() || undefined
+              } catch {
+                // plain-text IP body (checkip.amazonaws.com)
+                const m = body.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/)
+                if (m) egressIp = m[0]
+              }
+              resolve({
+                ok: true,
+                egressIp,
+                via: parsed.hostname,
+                bodySnippet: body.slice(0, 200),
+              })
+            })
+          }
+        )
+        req.on('timeout', () => {
+          req.destroy()
+          resolve({
+            ok: false,
+            error:
+              `Timed out after ${timeoutMs}ms fetching ${parsed.hostname} via ${proxy.serverUrl}. ` +
+              `If SOCKS logs show "connection reset by peer" to the destination IP, the exit is being RST'd by the target (not auth).`,
+            via: url,
+          })
+        })
+        req.on('error', (err) => {
+          const msg = err.message || String(err)
+          const rst =
+            /ECONNRESET|socket hang up|read ECONNRESET|connection reset/i.test(msg)
+          resolve({
+            ok: false,
+            error: rst
+              ? `Destination closed the tunnel while fetching ${parsed.hostname} via ${proxy.serverUrl}: ${msg}. ` +
+                `SOCKS auth already succeeded if the proxy logged "Connection from allowed IP". ` +
+                `This is egress rejection (datacenter / ASN / geo block), not a TubeVault bridge bug.`
+              : `Proxy egress error for ${parsed.hostname} via ${proxy.serverUrl}: ${msg}`,
+            via: url,
+          })
+        })
+      })
+
+      if (result.ok) {
+        console.log(
+          `[proxy] Node egress probe OK via ${result.via}: ${result.egressIp || result.bodySnippet || 'ok'} (upstream ${proxy.serverUrl})`
+        )
+        return result
+      }
+      lastError = result.error || lastError
+      console.warn(`[proxy] Node egress probe failed for ${result.via}: ${result.error}`)
+    } catch (err) {
+      lastError = (err as Error).message
+      console.warn(`[proxy] Node egress probe threw: ${lastError}`)
+    }
+  }
+
+  return { ok: false, error: lastError }
+}
+
+/**
+ * Annotate Chromium / Playwright proxy failures with SOCKS-log context so operators
+ * do not chase bridge bugs when the destination is RST'ing the exit IP.
+ */
+export function explainProxyNavigationError(err: unknown, proxy: ParsedProxy | null): string {
+  const msg = err instanceof Error ? err.message : String(err)
+  if (!proxy) return msg
+  if (!/ERR_PROXY_CONNECTION_FAILED|ERR_TUNNEL_CONNECTION_FAILED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|net::ERR_/i.test(msg)) {
+    return msg
+  }
+  return (
+    `${msg}\n` +
+    `[hint] Upstream proxy is ${proxy.serverUrl} (auth=${proxy.hasAuth}, socks=${proxy.isSocks}). ` +
+    `If your SOCKS daemon logs "Connection from allowed IP" then "splice: connection reset by peer" ` +
+    `to destinations like 66.254.114.41 / 208.99.84.* (PornHub / Reflected Networks CDN), ` +
+    `the proxy exit is being rejected by the site — not SOCKS auth and not the local HTTP bridge. ` +
+    `Try a residential exit, a different region, or the provider's HTTP endpoint. ` +
+    `Node probe: check container logs for "[proxy] Node egress probe".`
+  )
+}

@@ -2,8 +2,10 @@ import { chromium, type Browser, type BrowserContext, type Page, type Response, 
 import { config } from './config.js'
 import {
   buildHostResolverRules,
+  explainProxyNavigationError,
   getProxy,
   preparePlaywrightProxy,
+  probeProxyEgress,
   type PlaywrightProxyHandle,
 } from './proxy.js'
 import { writeFile } from 'node:fs/promises'
@@ -379,6 +381,21 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
       )
     } else if (config.playwrightProxyServer) {
       console.warn(`[playwright] PLAYWRIGHT_PROXY_SERVER is set but could not be parsed: "${config.playwrightProxyServer}"`)
+    }
+
+    // Node-side egress probe BEFORE launching Chromium. Cheap and uses the same
+    // SOCKS/HTTP agent as yt-dlp. Distinguishes:
+    //  - SOCKS auth / reachability failure
+    //  - destination RST (see SOCKS "splice: connection reset by peer" logs)
+    // from true bridge/Chromium bugs. Does not hard-fail the job — PH CDN may
+    // RST ipify while still serving video, or vice versa — but logs clearly.
+    if (proxy) {
+      const egress = await probeProxyEgress(proxy)
+      if (!egress.ok) {
+        console.warn(
+          `[playwright] Node egress probe failed before Chromium launch: ${egress.error}`
+        )
+      }
     }
 
     // Convert authenticated SOCKS5 → local no-auth HTTP bridge when needed.
@@ -1243,11 +1260,16 @@ export async function extractMediaUrls(pageUrl: string, signal?: AbortSignal): P
     console.log(`[playwright] found ${candidates.length} media candidate(s) for ${pageUrl}`)
     return { candidates, cookies, title }
   } catch (err) {
-    console.error('[playwright] extraction failed:', (err as Error).message)
+    // Re-read proxy for annotated errors (proxy may have been set only inside try).
+    const annotated = explainProxyNavigationError(err, getProxy())
+    console.error('[playwright] extraction failed:', annotated)
     await context?.close().catch(() => {})
     await browser?.close().catch(() => {})
     await pwProxy?.close().catch(() => {})
     pwProxy = null
+    if (annotated !== (err instanceof Error ? err.message : String(err))) {
+      throw new Error(annotated)
+    }
     throw err
   }
 }

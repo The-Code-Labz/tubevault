@@ -191,8 +191,21 @@ async function ensureNetscapeCookiesFile(sourcePath: string): Promise<string | n
   }
 }
 
+/** True when YTDLP_CUSTOM_ARGS already supplies --impersonate (avoid double-flag). */
+function customArgsHaveImpersonate(): boolean {
+  const args = config.ytDlpCustomArgs
+  return args.some((a, i) => a === '--impersonate' || a.startsWith('--impersonate=') ||
+    (args[i - 1] === '--impersonate'))
+}
+
 async function buildBaseArgs(): Promise<string[]> {
   const args: string[] = ['--no-playlist', '--newline']
+
+  // TLS fingerprint. PornHub and similar return HTTP 410 to plain urllib;
+  // curl_cffi Chrome impersonation is required (see Dockerfile).
+  if (config.ytDlpImpersonate && !customArgsHaveImpersonate()) {
+    args.push('--impersonate', config.ytDlpImpersonate)
+  }
 
   if (config.ytDlpUserAgent) {
     args.push('--user-agent', config.ytDlpUserAgent)

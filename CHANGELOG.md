@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Fixed
+- **PornHub HTTP 410 / missing impersonation:** image now installs `curl_cffi`; yt-dlp defaults to `--impersonate chrome` (`YTDLP_IMPERSONATE`, empty to disable). Without TLS fingerprinting, PornHub returns 410 even when the SOCKS path works.
+- **SOCKS egress diagnostics:** Node probes HTTPS through the upstream proxy before Chromium launch. SOCKS logs showing `Connection from allowed IP` then `splice: connection reset by peer` to `66.254.114.41` / `208.99.84.*` (PornHub / Reflected Networks) mean the **exit IP is RST'd by the CDN** — not SOCKS auth and not the local HTTP bridge. Playwright errors are annotated with this hint.
 - **Playwright + authenticated SOCKS5:** Chromium rejects `socks5://user:pass@…` with `Browser does not support socks5 proxy authentication`. TubeVault now auto-bridges authenticated SOCKS5 through a local no-auth HTTP proxy (`proxy-chain`) for Playwright only. yt-dlp and Node direct downloads still use the original SOCKS5 URL with credentials.
 - **Bridged SOCKS5 `net::ERR_PROXY_CONNECTION_FAILED`:** the bridge path no longer applies Chromium `--host-resolver-rules=MAP * ~NOTFOUND` (that was intended for native SOCKS only). A space-joined `EXCLUDE` list was also invalid — Chromium requires comma-separated rules — which could blackhole `127.0.0.1` and make every page load fail before traffic hit the bridge. Bridged upstream now uses `socks5h` for remote DNS, and CONNECT is preflighted so upstream/auth failures surface clearly instead of as opaque proxy errors.
 - Direct downloads through an **HTTP(S)** upstream proxy no longer incorrectly construct a `SocksProxyAgent` (now uses `HttpsProxyAgent`).

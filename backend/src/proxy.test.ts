@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict'
 import {
   buildHostResolverRules,
+  explainProxyNavigationError,
   parseProxyUrl,
   preparePlaywrightProxy,
 } from './proxy.js'
@@ -125,12 +126,26 @@ async function testPrepareNull() {
   console.log('✓ preparePlaywrightProxy(null) → null')
 }
 
+function testExplainProxyNavigationError() {
+  const p = parseProxyUrl('socks5://alice:s3cret@100.89.46.32:1080')
+  assert.ok(p)
+  const raw = 'page.goto: net::ERR_PROXY_CONNECTION_FAILED at https://www.pornhub.com/'
+  const annotated = explainProxyNavigationError(new Error(raw), p)
+  assert.match(annotated, /ERR_PROXY_CONNECTION_FAILED/)
+  assert.match(annotated, /66\.254\.114\.41|Reflected|residential|egress/i)
+  assert.match(annotated, /100\.89\.46\.32/)
+  // Non-proxy errors stay untouched.
+  assert.equal(explainProxyNavigationError(new Error('boom'), p), 'boom')
+  console.log('✓ explainProxyNavigationError annotates Chromium proxy failures')
+}
+
 async function main() {
   testParseSocksAuth()
   testParseSocksNoAuth()
   testParseHttpAuth()
   testParseRejectsUnknown()
   testHostResolverRulesCommaSeparated()
+  testExplainProxyNavigationError()
   await testPrepareSocksAuthBridges()
   await testPrepareSocksNoAuthNative()
   await testPrepareHttpAuthNative()
