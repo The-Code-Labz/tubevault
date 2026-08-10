@@ -541,11 +541,13 @@ async function downloadWithYtDlp(
   signal: AbortSignal,
   onProgress?: (line: string) => void
 ): Promise<string> {
-  // hanime-plugin returns discrete HLS labels (720p/480p/360p), not bestvideo+bestaudio.
+  // hanime-plugin returns discrete HLS labels (720p/480p/360p) with height=None.
+  // Prefer format_id by name — plain `best` usually works but can mis-rank when
+  // resolution/tbr are missing. Free/guest tops out at 720p (no premium 1080p).
   const formatSelector =
     config.ytDlpFormat ||
     (needsFfmpegHlsDownloader(url)
-      ? 'best/bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/worst'
+      ? '720p/best/480p/360p/bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/worst'
       : 'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best/best*[ext=mp4]/worst')
 
   const args = [
@@ -557,6 +559,12 @@ async function downloadWithYtDlp(
     '--output', outTemplate,
     url,
   ]
+
+  if (needsFfmpegHlsDownloader(url) && !config.ytDlpFormat) {
+    console.log(`[downloader] hanime-family format selector: ${formatSelector} (prefer 720p)`)
+  } else if (config.ytDlpFormat) {
+    console.log(`[downloader] using YTDLP_FORMAT override: ${formatSelector}`)
+  }
 
   await runYtDlp(args, { signal, onProgress })
 

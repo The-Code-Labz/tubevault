@@ -4,6 +4,7 @@
 
 ### Added
 - **hanime.tv support:** Docker image installs Deno + `hanime-plugin` + `pycryptodomex`. yt-dlp gains the `HanimeTV` extractor (WASM handshake via Deno). TubeVault auto-uses `--downloader ffmpeg` for hanime-family AES-HLS (avoids "Data must be padded to 16 byte boundary"), skips `--impersonate` on those hosts so a missing curl_cffi target cannot abort the plugin path, and sends `Referer: https://hanime.tv/`. Also covers related plugin hosts (hentaihaven, hstream.moe, oppai.stream, ohentai, hentaimama, hanime.red). Free tiers top out at 720p — premium 1080p is out of scope.
+- **hanime 720p preference:** default format selector for hanime-family is `720p/best/480p/360p/...` (plugin format IDs have no height/tbr). Override with `YTDLP_FORMAT=720p` (or `480p` / `360p`).
 
 ## Unreleased
 

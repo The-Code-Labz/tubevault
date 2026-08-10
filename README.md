@@ -142,7 +142,25 @@ TubeVault will:
 
 - run the plugin handshake (no Playwright needed on the happy path)
 - download AES-encrypted HLS with **ffmpeg** (native yt-dlp decrypt can fail with a CBC padding error)
-- keep free/guest streams (typically up to **720p**; premium 1080p is not supported)
+- prefer **720p** by format id (`720p/best/480p/360p/...`) — free/guest tops out there; premium 1080p is not supported
+
+Available formats on free/guest look like:
+
+```text
+ID   EXT RESOLUTION | PROTO
+360p mp4 unknown    | m3u8
+480p mp4 unknown    | m3u8
+720p mp4 unknown    | m3u8
+```
+
+To force a quality (optional — 720p is already the default for hanime-family):
+
+```bash
+# .env — pin exactly 720p (falls through if that label is missing only if you add fallbacks)
+YTDLP_FORMAT=720p/480p/360p/best
+```
+
+`YTDLP_FORMAT` is global for all yt-dlp downloads. Leave it unset unless you need a site-wide override.
 
 Verify inside the container after rebuild:
 
@@ -150,6 +168,9 @@ Verify inside the container after rebuild:
 docker compose exec backend deno --version
 docker compose exec backend yt-dlp --list-extractors | grep -i HanimeTV
 docker compose exec backend yt-dlp --skip-download -F "https://hanime.tv/videos/hentai/hamehara-1"
+# should print format_id 720p:
+docker compose exec backend yt-dlp -f '720p/best/480p/360p' --print '%(format_id)s' --skip-download \
+  "https://hanime.tv/videos/hentai/hamehara-1"
 ```
 
 If Deno is missing from PATH or the plugin is absent, logs will show extractor/Deno errors — rebuild the image (`docker compose up --build -d`).
