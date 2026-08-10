@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+- **hanime.tv HTTP 403 via SOCKS:** Cloudflare on hanime routinely 403s the same SOCKS exit that works for PornHub. Reproduced: direct egress lists 360p/480p/720p; identical URL through `PLAYWRIGHT_PROXY_SERVER` → `HTTP Error 403`. Hanime-family now **skips the global proxy by default** (`HANIME_BYPASS_PROXY=true`). Playwright fallback is also disabled for hanime-family (browser only harvests Turnstile challenge URLs and cannot run the Deno/WASM handshake). Challenge hosts are excluded from media-candidate scoring.
+
 ### Added
 - **hanime.tv support:** Docker image installs Deno + `hanime-plugin` + `pycryptodomex`. yt-dlp gains the `HanimeTV` extractor (WASM handshake via Deno). TubeVault auto-uses `--downloader ffmpeg` for hanime-family AES-HLS (avoids "Data must be padded to 16 byte boundary"), skips `--impersonate` on those hosts so a missing curl_cffi target cannot abort the plugin path, and sends `Referer: https://hanime.tv/`. Also covers related plugin hosts (hentaihaven, hstream.moe, oppai.stream, ohentai, hentaimama, hanime.red). Free tiers top out at 720p — premium 1080p is out of scope.
 - **hanime 720p preference:** default format selector for hanime-family is `720p/best/480p/360p/...` (plugin format IDs have no height/tbr). Override with `YTDLP_FORMAT=720p` (or `480p` / `360p`).
+- **`HANIME_BYPASS_PROXY`:** default `true` — hanime-family yt-dlp runs without `PLAYWRIGHT_PROXY_SERVER`. Set `false` only if your SOCKS exit is known-good for Cloudflare/hanime.
 
 ## Unreleased
 

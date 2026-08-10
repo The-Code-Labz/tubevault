@@ -56,6 +56,12 @@ const EXCLUDED_PATTERNS = [
   /exoclick/,
   /trafficjunky/,
   /tsyndicate/,
+  // Cloudflare Turnstile / challenge platform — never real media. When a page is
+  // stuck behind CF, interceptors otherwise harvest these as "candidates" and the
+  // downloader wastes cycles feeding challenge tokens to yt-dlp/ffmpeg.
+  /challenges\.cloudflare\.com/,
+  /cdn-cgi\/challenge-platform/,
+  /cloudflareinsights\.com/,
   /chrome-error:/,
   /https?:\/\/undefined\//,
   /\.js$/,

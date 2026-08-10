@@ -284,10 +284,23 @@ async function buildBaseArgs(pageUrl?: string): Promise<string[]> {
     args.push('--add-header', 'Referer:https://hanime.tv/')
   }
 
+  // Proxy: global PLAYWRIGHT_PROXY_SERVER applies to most sites, but hanime-family
+  // defaults to DIRECT egress. Cloudflare on hanime.tv routinely 403s SOCKS exits
+  // that still work for PornHub (reproduced: direct → 720p OK, same SOCKS → 403).
+  // Playwright cannot salvage that path (WASM handshake + AES HLS via Deno plugin).
   if (config.playwrightProxyServer) {
-    // yt-dlp supports the same URL format with embedded credentials.
-    args.push('--proxy', config.playwrightProxyServer)
-    console.log(`[downloader] yt-dlp will use proxy: ${config.playwrightProxyServer.replace(/:\/\/[^:]+:[^@]+@/, '://***@')}`)
+    if (hanimeFamily && config.hanimeBypassProxy) {
+      console.log(
+        '[downloader] hanime-family — skipping PLAYWRIGHT_PROXY_SERVER ' +
+          '(Cloudflare often 403s SOCKS exits; set HANIME_BYPASS_PROXY=false to force proxy)'
+      )
+    } else {
+      // yt-dlp supports the same URL format with embedded credentials.
+      args.push('--proxy', config.playwrightProxyServer)
+      console.log(
+        `[downloader] yt-dlp will use proxy: ${config.playwrightProxyServer.replace(/:\/\/[^:]+:[^@]+@/, '://***@')}`
+      )
+    }
   }
 
   // AES-encrypted HLS: yt-dlp's Python decryptor can fail with
@@ -595,8 +608,24 @@ async function downloadWithYtDlp(
   return videoFile
 }
 
-function shouldTryPlaywrightFallback(url: string, _errorMessage: string): boolean {
+function shouldTryPlaywrightFallback(url: string, errorMessage: string): boolean {
   if (!config.playwrightFallbackEnabled) return false
+
+  // hanime-family requires the Deno/WASM plugin path (AES token + ffmpeg HLS).
+  // Generic Playwright only sees Cloudflare Turnstile challenge URLs and can never
+  // complete the handshake — spinning Chromium just wastes time and confuses logs.
+  if (needsFfmpegHlsDownloader(url)) {
+    const cf403 = /HTTP Error 403|403:\s*Forbidden|cloudflare/i.test(errorMessage || '')
+    console.warn(
+      '[downloader] skipping Playwright fallback for hanime-family ' +
+        '(needs Deno/WASM plugin + ffmpeg HLS, not browser intercept)' +
+        (cf403
+          ? '. HTTP 403 usually means the egress IP is Cloudflare-blocked — ' +
+            'hanime defaults to direct (no proxy); if you forced HANIME_BYPASS_PROXY=false, try direct or another exit'
+          : '')
+    )
+    return false
+  }
 
   // Empty PLAYWRIGHT_FALLBACK_SITES (default) = try browser on ANY yt-dlp failure.
   // A non-empty value is treated as a hostname regex allowlist.

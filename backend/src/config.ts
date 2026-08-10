@@ -78,6 +78,14 @@ export const config = {
     ? 'chrome'
     : process.env.YTDLP_IMPERSONATE.trim(),
 
+  /**
+   * hanime.tv (and related plugin hosts) sit behind Cloudflare. Many SOCKS exits that
+   * work for PornHub still get HTTP 403 on hanime while the TubeVault host's direct
+   * egress succeeds. Default true = do NOT send PLAYWRIGHT_PROXY_SERVER to yt-dlp for
+   * those hosts. Set HANIME_BYPASS_PROXY=false to force the global proxy on them too.
+   */
+  hanimeBypassProxy: process.env.HANIME_BYPASS_PROXY !== 'false',
+
   // Playwright fallback for any site yt-dlp cannot handle (JS players, age gates, HLS embeds).
   // When yt-dlp fails, TubeVault launches Chromium, intercepts network traffic,
   // grabs the .m3u8 / .mp4 / .ts manifest URL, and feeds it back to yt-dlp with proper headers.

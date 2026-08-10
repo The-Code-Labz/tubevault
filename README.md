@@ -115,6 +115,7 @@ npm start
 | `YTDLP_REFERER` | No | Force a Referer header |
 | `YTDLP_CUSTOM_ARGS` | No | Extra args passed to yt-dlp |
 | `YTDLP_IMPERSONATE` | No | TLS fingerprint target for yt-dlp (default `chrome`; requires `curl_cffi`). Set empty to disable. Fixes PornHub HTTP 410 |
+| `HANIME_BYPASS_PROXY` | No | Skip `PLAYWRIGHT_PROXY_SERVER` for hanime-family (default `true`). Cloudflare often 403s SOCKS exits that still work for PornHub; set `false` only if your exit is known-good for hanime |
 | `PLAYWRIGHT_FALLBACK_ENABLED` | No | Browser fallback when yt-dlp fails (default `true`) |
 | `PLAYWRIGHT_FALLBACK_SITES` | No | Optional hostname regex allowlist. **Empty (default) = try fallback on any host** after yt-dlp fails |
 | `PLAYWRIGHT_HEADLESS` | No | Run Chromium headless (default `true`) |
@@ -285,6 +286,13 @@ By default the API sends no CORS headers (same-origin only). If the frontend is 
 - Download URLs are checked against a best-effort SSRF allowlist (blocks loopback/private/link-local/cloud-metadata address ranges) before being handed to `yt-dlp`. This resolves DNS once at validation time — it reduces but does not eliminate DNS-rebinding risk, so still run this behind network egress restrictions if downloading from untrusted URLs matters to your threat model.
 - The Supabase Storage bucket is private (never `public: true`); video URLs are short-lived signed URLs minted per authenticated, ownership-checked request — never permanent/unsigned. See "Storage bucket" above for the auto-migration behavior on existing deployments.
 - Keep your service keys in `.env` only — never commit them. `SUPABASE_ANON_KEY` is the one exception meant to be public (it's the browser client key, served via `GET /api/config`).
+- Self-signup is disabled: the frontend has no sign-up form, and `/api/admin/invite` (gated by `ADMIN_API_KEY` via `X-Admin-Key`) is the only way to onboard a user, kept isolated from `/api/videos*`. This is still UX/defense-in-depth — the actual enforcement boundary is the "Allow new users to sign up" toggle in Supabase's dashboard (Authentication → Providers → Email); see "Invite-only setup" above.
+- R2 storage is unaffected by this: R2 objects are still served via a plain CDN/public-dev URL (`R2_PUBLIC_URL` or the R2 endpoint), matching how R2 buckets are normally fronted. If that's not an acceptable threat model for your R2 bucket's contents, put access control in front of it yourself (e.g. Cloudflare Access, a signed-URL Worker) or use `STORAGE_BACKEND=supabase`.
+
+## License
+
+MIT
+ `GET /api/config`).
 - Self-signup is disabled: the frontend has no sign-up form, and `/api/admin/invite` (gated by `ADMIN_API_KEY` via `X-Admin-Key`) is the only way to onboard a user, kept isolated from `/api/videos*`. This is still UX/defense-in-depth — the actual enforcement boundary is the "Allow new users to sign up" toggle in Supabase's dashboard (Authentication → Providers → Email); see "Invite-only setup" above.
 - R2 storage is unaffected by this: R2 objects are still served via a plain CDN/public-dev URL (`R2_PUBLIC_URL` or the R2 endpoint), matching how R2 buckets are normally fronted. If that's not an acceptable threat model for your R2 bucket's contents, put access control in front of it yourself (e.g. Cloudflare Access, a signed-URL Worker) or use `STORAGE_BACKEND=supabase`.
 
