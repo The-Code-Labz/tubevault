@@ -46,6 +46,48 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[^a-z0-9\-_\.]/gi, '_').replace(/_+/g, '_').slice(0, 80)
 }
 
+/** hanime.tv needs special yt-dlp handling (plugin + ffmpeg HLS). */
+function isHanimeTvUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    return (
+      host === 'hanime.tv' ||
+      host === 'www.hanime.tv' ||
+      host.endsWith('.hanime.tv')
+    )
+  } catch {
+    return /hanime\.tv/i.test(url)
+  }
+}
+
+/**
+ * Hosts served by the bundled `hanime-plugin` yt-dlp extractors.
+ * AES-CBC HLS often fails yt-dlp's native fragment decryptor
+ * ("Data must be padded to 16 byte boundary") — ffmpeg handles crypto+ HLS.
+ */
+function needsFfmpegHlsDownloader(url: string): boolean {
+  if (isHanimeTvUrl(url)) return true
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    return (
+      host === 'hentaihaven.com' ||
+      host.endsWith('.hentaihaven.com') ||
+      host === 'hstream.moe' ||
+      host.endsWith('.hstream.moe') ||
+      host === 'oppai.stream' ||
+      host.endsWith('.oppai.stream') ||
+      host === 'ohentai.org' ||
+      host.endsWith('.ohentai.org') ||
+      host === 'hentaimama.io' ||
+      host.endsWith('.hentaimama.io') ||
+      host === 'hanime.red' ||
+      host.endsWith('.hanime.red')
+    )
+  } catch {
+    return false
+  }
+}
+
 export interface YtDlpVersion {
   version: string
   path: string
@@ -198,12 +240,15 @@ function customArgsHaveImpersonate(): boolean {
     (args[i - 1] === '--impersonate'))
 }
 
-async function buildBaseArgs(): Promise<string[]> {
+async function buildBaseArgs(pageUrl?: string): Promise<string[]> {
   const args: string[] = ['--no-playlist', '--newline']
+  const hanimeFamily = pageUrl ? needsFfmpegHlsDownloader(pageUrl) : false
 
   // TLS fingerprint. PornHub and similar return HTTP 410 to plain urllib;
   // curl_cffi Chrome impersonation is required (see Dockerfile).
-  if (config.ytDlpImpersonate && !customArgsHaveImpersonate()) {
+  // Skip for hanime-plugin hosts: the extractor uses its own Deno/WASM auth path
+  // and a hard impersonate failure would abort before the plugin runs.
+  if (config.ytDlpImpersonate && !customArgsHaveImpersonate() && !hanimeFamily) {
     args.push('--impersonate', config.ytDlpImpersonate)
   }
 
@@ -234,12 +279,22 @@ async function buildBaseArgs(): Promise<string[]> {
 
   if (config.ytDlpReferer) {
     args.push('--add-header', `Referer:${config.ytDlpReferer}`)
+  } else if (pageUrl && isHanimeTvUrl(pageUrl)) {
+    // Handshake + HLS are origin-sensitive; prefer an explicit hanime Referer.
+    args.push('--add-header', 'Referer:https://hanime.tv/')
   }
 
   if (config.playwrightProxyServer) {
     // yt-dlp supports the same URL format with embedded credentials.
     args.push('--proxy', config.playwrightProxyServer)
     console.log(`[downloader] yt-dlp will use proxy: ${config.playwrightProxyServer.replace(/:\/\/[^:]+:[^@]+@/, '://***@')}`)
+  }
+
+  // AES-encrypted HLS: yt-dlp's Python decryptor can fail with
+  // "Data must be padded to 16 byte boundary in CBC mode". ffmpeg handles it.
+  if (hanimeFamily) {
+    args.push('--downloader', 'ffmpeg')
+    console.log('[downloader] hanime-family URL — using ffmpeg HLS downloader (AES crypto)')
   }
 
   if (config.ytDlpCustomArgs.length > 0) {
@@ -291,7 +346,7 @@ export async function fetchMetadata(url: string, signal?: AbortSignal): Promise<
   extractor?: string
   uploader?: string
 }> {
-  const args = [...await buildBaseArgs(), '--dump-single-json', url]
+  const args = [...await buildBaseArgs(url), '--dump-single-json', url]
   const { stdout, stderr } = await runYtDlp(args, { signal })
 
   try {
@@ -486,12 +541,15 @@ async function downloadWithYtDlp(
   signal: AbortSignal,
   onProgress?: (line: string) => void
 ): Promise<string> {
+  // hanime-plugin returns discrete HLS labels (720p/480p/360p), not bestvideo+bestaudio.
   const formatSelector =
     config.ytDlpFormat ||
-    'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best/best*[ext=mp4]/worst'
+    (needsFfmpegHlsDownloader(url)
+      ? 'best/bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/worst'
+      : 'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best/best*[ext=mp4]/worst')
 
   const args = [
-    ...await buildBaseArgs(),
+    ...await buildBaseArgs(url),
     '-f', formatSelector,
     '--merge-output-format', 'mp4',
     '--remux-video', 'mp4',
@@ -773,7 +831,7 @@ async function downloadWithPlaywrightFallback(
         extraArgs.push('--user-agent', headers['User-Agent'])
       }
 
-      const baseArgs = await buildBaseArgs()
+      const baseArgs = await buildBaseArgs(pageUrl)
       const args = [
         '--no-playlist',
         '--newline',

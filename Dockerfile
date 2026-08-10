@@ -5,6 +5,8 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     curl \
+    ca-certificates \
+    unzip \
     # Playwright / Chromium system deps
     libnss3 \
     libnspr4 \
@@ -24,15 +26,27 @@ RUN apt-get update && apt-get install -y \
     libatspi2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
+# Deno is required by the hanime-plugin yt-dlp extractor (WASM auth handshake).
+# Install system-wide so PATH is correct for non-interactive Node/yt-dlp children.
+ENV DENO_INSTALL=/usr/local
+RUN curl -fsSL https://deno.land/install.sh | sh \
+    && deno --version
+
 # curl_cffi enables yt-dlp --impersonate (TLS fingerprint). PornHub and similar
 # return HTTP 410 / bot walls to plain Python urllib; Chrome impersonation fixes that.
-RUN pip3 install --break-system-packages "yt-dlp[default,curl-cffi]" \
-    || pip3 install --break-system-packages yt-dlp curl_cffi \
-    || pip3 install yt-dlp curl_cffi
+# hanime-plugin + pycryptodomex add HanimeTV / related extractors (not in stock yt-dlp).
+RUN pip3 install --break-system-packages \
+      "yt-dlp[default,curl-cffi]" \
+      "hanime-plugin" \
+      "pycryptodomex" \
+    || pip3 install --break-system-packages yt-dlp curl_cffi hanime-plugin pycryptodomex \
+    || pip3 install yt-dlp curl_cffi hanime-plugin pycryptodomex
 # Ensure yt-dlp is on PATH and up-to-date at build time
 RUN yt-dlp -U || true
-# Log impersonation support so missing curl_cffi is obvious in build logs
+# Log impersonation + plugin support so missing deps are obvious in build logs
 RUN yt-dlp --list-impersonate-targets || true
+RUN yt-dlp --list-extractors 2>/dev/null | grep -E 'HanimeTV|HentaiHaven|Hstream' || true
+RUN python3 -c "import yt_dlp_plugins.extractor.htv as h; print('hanime-plugin OK', h.HanimeTVIE.__name__)"
 
 WORKDIR /app
 

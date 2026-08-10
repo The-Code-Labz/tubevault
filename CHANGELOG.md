@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+- **hanime.tv support:** Docker image installs Deno + `hanime-plugin` + `pycryptodomex`. yt-dlp gains the `HanimeTV` extractor (WASM handshake via Deno). TubeVault auto-uses `--downloader ffmpeg` for hanime-family AES-HLS (avoids "Data must be padded to 16 byte boundary"), skips `--impersonate` on those hosts so a missing curl_cffi target cannot abort the plugin path, and sends `Referer: https://hanime.tv/`. Also covers related plugin hosts (hentaihaven, hstream.moe, oppai.stream, ohentai, hentaimama, hanime.red). Free tiers top out at 720p — premium 1080p is out of scope.
+
+## Unreleased
+
 ### Fixed
 - **PornHub HTTP 410 / missing impersonation:** image now installs `curl_cffi`; yt-dlp defaults to `--impersonate chrome` (`YTDLP_IMPERSONATE`, empty to disable). Without TLS fingerprinting, PornHub returns 410 even when the SOCKS path works.
 - **SOCKS egress diagnostics:** Node probes HTTPS through the upstream proxy before Chromium launch. SOCKS logs showing `Connection from allowed IP` then `splice: connection reset by peer` to `66.254.114.41` / `208.99.84.*` (PornHub / Reflected Networks) mean the **exit IP is RST'd by the CDN** — not SOCKS auth and not the local HTTP bridge. Playwright errors are annotated with this hint.

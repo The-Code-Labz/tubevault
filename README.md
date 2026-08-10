@@ -125,6 +125,35 @@ npm start
 | `PLAYWRIGHT_COOKIES_SAMESITE` | No | Override SameSite default (`Lax`) — try `None` for cross-site players |
 | `PLAYWRIGHT_EXTRA_ARGS` | No | Extra Chromium launch flags |
 
+## hanime.tv
+
+Stock yt-dlp has **no** hanime.tv extractor. TubeVault's image installs:
+
+1. **Deno** — required for the WASM auth handshake
+2. **`hanime-plugin`** + **`pycryptodomex`** — yt-dlp plugin (`HanimeTV` extractor)
+
+Paste a page URL like:
+
+```
+https://hanime.tv/videos/hentai/hamehara-1
+```
+
+TubeVault will:
+
+- run the plugin handshake (no Playwright needed on the happy path)
+- download AES-encrypted HLS with **ffmpeg** (native yt-dlp decrypt can fail with a CBC padding error)
+- keep free/guest streams (typically up to **720p**; premium 1080p is not supported)
+
+Verify inside the container after rebuild:
+
+```bash
+docker compose exec backend deno --version
+docker compose exec backend yt-dlp --list-extractors | grep -i HanimeTV
+docker compose exec backend yt-dlp --skip-download -F "https://hanime.tv/videos/hentai/hamehara-1"
+```
+
+If Deno is missing from PATH or the plugin is absent, logs will show extractor/Deno errors — rebuild the image (`docker compose up --build -d`).
+
 ## Sites yt-dlp cannot extract (Playwright fallback)
 
 TubeVault has **two layers** for downloads:
