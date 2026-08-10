@@ -86,6 +86,24 @@ export const config = {
    */
   hanimeBypassProxy: process.env.HANIME_BYPASS_PROXY !== 'false',
 
+  /**
+   * Optional dedicated proxy used ONLY for hanime-family yt-dlp jobs.
+   * Takes precedence over PLAYWRIGHT_PROXY_SERVER for those hosts.
+   * Use when the container's direct egress is Cloudflare-blocked but a different
+   * exit (often residential / HTTP) can open hanime.tv.
+   * Example: socks5://user:pass@host:1080  or  http://user:pass@host:8080
+   */
+  hanimeProxyServer: (process.env.HANIME_PROXY_SERVER || '').trim(),
+
+  /**
+   * Whether to pass YTDLP_COOKIES_FILE to hanime-family jobs.
+   * Default false — the HanimeTV plugin uses a Deno/WASM handshake and does not need
+   * browser cookies. A multi-site cookies.txt (e.g. PornHub + stale cf_clearance) can
+   * poison Cloudflare on the container egress and produce HTTP 403.
+   * Set HANIME_USE_COOKIES=true only if you intentionally synced fresh hanime.tv cookies.
+   */
+  hanimeUseCookies: process.env.HANIME_USE_COOKIES === 'true',
+
   // Playwright fallback for any site yt-dlp cannot handle (JS players, age gates, HLS embeds).
   // When yt-dlp fails, TubeVault launches Chromium, intercepts network traffic,
   // grabs the .m3u8 / .mp4 / .ts manifest URL, and feeds it back to yt-dlp with proper headers.

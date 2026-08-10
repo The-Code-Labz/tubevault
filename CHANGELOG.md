@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- **hanime.tv still 403 after SOCKS bypass:** when the container's direct egress is also Cloudflare-blocked (logs show bypass active, then `HTTP Error 403`), TubeVault now (1) skips `YTDLP_COOKIES_FILE` for hanime-family by default (`HANIME_USE_COOKIES=false`) - multi-site cookies are unnecessary for the WASM handshake and can poison CF, (2) supports a dedicated `HANIME_PROXY_SERVER` for hanime-only exits, (3) preflights `https://hanime.tv` before yt-dlp and annotates 403s with the egress fix. Playwright remains disabled for hanime-family.
 - **hanime.tv HTTP 403 via SOCKS:** Cloudflare on hanime routinely 403s the same SOCKS exit that works for PornHub. Reproduced: direct egress lists 360p/480p/720p; identical URL through `PLAYWRIGHT_PROXY_SERVER` → `HTTP Error 403`. Hanime-family now **skips the global proxy by default** (`HANIME_BYPASS_PROXY=true`). Playwright fallback is also disabled for hanime-family (browser only harvests Turnstile challenge URLs and cannot run the Deno/WASM handshake). Challenge hosts are excluded from media-candidate scoring.
 
 ### Added

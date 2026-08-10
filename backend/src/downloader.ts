@@ -240,7 +240,100 @@ function customArgsHaveImpersonate(): boolean {
     (args[i - 1] === '--impersonate'))
 }
 
-async function buildBaseArgs(pageUrl?: string): Promise<string[]> {
+function redactProxyUrl(url: string): string {
+  return url.replace(/:\/\/[^:]+:[^@]+@/, '://***@')
+}
+
+function isHttp403Error(message: string): boolean {
+  return /HTTP Error 403|403:\s*Forbidden/i.test(message || '')
+}
+
+/**
+ * Cheap preflight: can this process open hanime.tv at all?
+ * Logs status + body snip so Cloudflare HTML is obvious in container logs.
+ * Does not throw — callers still run yt-dlp; this only improves diagnostics.
+ */
+async function probeHanimeEgress(proxyUrl?: string): Promise<{
+  ok: boolean
+  status?: number
+  snippet?: string
+  error?: string
+}> {
+  return new Promise((resolve) => {
+    const target = 'https://hanime.tv/'
+    const timer = setTimeout(() => {
+      resolve({ ok: false, error: 'preflight timed out after 12s' })
+    }, 12000)
+
+    const finish = (result: { ok: boolean; status?: number; snippet?: string; error?: string }) => {
+      clearTimeout(timer)
+      resolve(result)
+    }
+
+    try {
+      // Prefer undici-free path: spawn curl so we don't need extra deps and can
+      // pass --proxy the same way yt-dlp does (SOCKS5 + HTTP).
+      const args = [
+        '-sS',
+        '-o',
+        '-',
+        '-w',
+        '\n__TV_HTTP_CODE__:%{http_code}',
+        '--max-time',
+        '10',
+        '-A',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        '-H',
+        'Accept: text/html,application/xhtml+xml',
+      ]
+      if (proxyUrl) {
+        args.push('--proxy', proxyUrl)
+      }
+      args.push(target)
+
+      const child = spawn('curl', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.on('data', (d) => (stdout += d.toString()))
+      child.stderr.on('data', (d) => (stderr += d.toString()))
+      child.on('error', (err) => finish({ ok: false, error: err.message }))
+      child.on('close', () => {
+        const m = stdout.match(/__TV_HTTP_CODE__:(\d+)/)
+        const status = m ? parseInt(m[1], 10) : undefined
+        const body = stdout.replace(/\n__TV_HTTP_CODE__:\d+\s*$/, '')
+        const snippet = body.slice(0, 160).replace(/\s+/g, ' ').trim()
+        if (!status) {
+          finish({ ok: false, error: stderr.trim() || 'curl failed', snippet })
+          return
+        }
+        const looksCf =
+          /just a moment|cf-browser-verification|cloudflare|attention required/i.test(body) ||
+          status === 403 ||
+          status === 503
+        finish({
+          ok: status >= 200 && status < 400 && !looksCf,
+          status,
+          snippet,
+          error: looksCf ? 'Cloudflare challenge / block page' : undefined,
+        })
+      })
+    } catch (err: any) {
+      finish({ ok: false, error: err?.message || 'preflight failed' })
+    }
+  })
+}
+
+interface BuildBaseArgsOptions {
+  /** Force cookies on/off for this invocation (overrides hanime default). */
+  forceCookies?: boolean
+  /** Override proxy selection for this invocation. */
+  forceProxy?: string | null
+}
+
+async function buildBaseArgs(
+  pageUrl?: string,
+  options: BuildBaseArgsOptions = {}
+): Promise<string[]> {
   const args: string[] = ['--no-playlist', '--newline']
   const hanimeFamily = pageUrl ? needsFfmpegHlsDownloader(pageUrl) : false
 
@@ -256,11 +349,26 @@ async function buildBaseArgs(pageUrl?: string): Promise<string[]> {
     args.push('--user-agent', config.ytDlpUserAgent)
   }
 
-  if (config.ytDlpCookiesFromBrowser) {
+  // Cookies: hanime-family defaults OFF. Multi-site cookies.txt (PornHub + stale
+  // cf_clearance) is a common source of Cloudflare 403 on the container egress.
+  // The HanimeTV plugin authenticates via Deno/WASM, not browser session cookies.
+  const wantCookies =
+    options.forceCookies !== undefined
+      ? options.forceCookies
+      : hanimeFamily
+        ? config.hanimeUseCookies
+        : true
+
+  if (wantCookies && config.ytDlpCookiesFromBrowser) {
     args.push('--cookies-from-browser', config.ytDlpCookiesFromBrowser)
+  } else if (hanimeFamily && config.ytDlpCookiesFromBrowser && !wantCookies) {
+    console.log(
+      '[downloader] hanime-family — skipping YTDLP_COOKIES_FROM_BROWSER ' +
+        '(set HANIME_USE_COOKIES=true to force)'
+    )
   }
 
-  if (config.ytDlpCookiesFile) {
+  if (wantCookies && config.ytDlpCookiesFile) {
     // yt-dlp does NOT error when --cookies points at a missing file — it silently
     // proceeds unauthenticated, which surfaces later as a confusing extractor
     // failure with no mention of cookies at all. Fail loud here instead.
@@ -275,6 +383,12 @@ async function buildBaseArgs(pageUrl?: string): Promise<string[]> {
         args.push('--cookies', netscapePath)
       }
     }
+  } else if (hanimeFamily && config.ytDlpCookiesFile && !wantCookies) {
+    console.log(
+      '[downloader] hanime-family — skipping YTDLP_COOKIES_FILE ' +
+        '(plugin uses WASM handshake; multi-site cookies often poison CF. ' +
+        'Set HANIME_USE_COOKIES=true only with fresh hanime.tv cookies)'
+    )
   }
 
   if (config.ytDlpReferer) {
@@ -284,21 +398,35 @@ async function buildBaseArgs(pageUrl?: string): Promise<string[]> {
     args.push('--add-header', 'Referer:https://hanime.tv/')
   }
 
-  // Proxy: global PLAYWRIGHT_PROXY_SERVER applies to most sites, but hanime-family
-  // defaults to DIRECT egress. Cloudflare on hanime.tv routinely 403s SOCKS exits
-  // that still work for PornHub (reproduced: direct → 720p OK, same SOCKS → 403).
-  // Playwright cannot salvage that path (WASM handshake + AES HLS via Deno plugin).
-  if (config.playwrightProxyServer) {
+  // Proxy selection for hanime-family:
+  //   1. HANIME_PROXY_SERVER (dedicated) if set
+  //   2. else PLAYWRIGHT_PROXY_SERVER only when HANIME_BYPASS_PROXY=false
+  //   3. else direct egress
+  // Other sites always use PLAYWRIGHT_PROXY_SERVER when set.
+  // forceProxy: string = use it; null = force direct; undefined = default policy.
+  if (options.forceProxy !== undefined) {
+    if (options.forceProxy) {
+      args.push('--proxy', options.forceProxy)
+      console.log(`[downloader] yt-dlp will use forced proxy: ${redactProxyUrl(options.forceProxy)}`)
+    } else {
+      console.log('[downloader] yt-dlp forced direct egress (no proxy)')
+    }
+  } else if (hanimeFamily && config.hanimeProxyServer) {
+    args.push('--proxy', config.hanimeProxyServer)
+    console.log(
+      `[downloader] hanime-family — using HANIME_PROXY_SERVER: ${redactProxyUrl(config.hanimeProxyServer)}`
+    )
+  } else if (config.playwrightProxyServer) {
     if (hanimeFamily && config.hanimeBypassProxy) {
       console.log(
         '[downloader] hanime-family — skipping PLAYWRIGHT_PROXY_SERVER ' +
-          '(Cloudflare often 403s SOCKS exits; set HANIME_BYPASS_PROXY=false to force proxy)'
+          '(Cloudflare often 403s SOCKS exits; set HANIME_PROXY_SERVER for a known-good exit, ' +
+          'or HANIME_BYPASS_PROXY=false to force the global proxy)'
       )
     } else {
-      // yt-dlp supports the same URL format with embedded credentials.
       args.push('--proxy', config.playwrightProxyServer)
       console.log(
-        `[downloader] yt-dlp will use proxy: ${config.playwrightProxyServer.replace(/:\/\/[^:]+:[^@]+@/, '://***@')}`
+        `[downloader] yt-dlp will use proxy: ${redactProxyUrl(config.playwrightProxyServer)}`
       )
     }
   }
@@ -351,6 +479,28 @@ async function runYtDlp(
   })
 }
 
+function annotateHanime403(message: string): string {
+  if (!isHttp403Error(message)) return message
+  return (
+    `${message}\n` +
+    '[hanime] HTTP 403 = Cloudflare blocked this egress path. ' +
+    'TubeVault already skips PLAYWRIGHT_PROXY_SERVER and cookies by default. ' +
+    'If direct container egress is also blocked, set HANIME_PROXY_SERVER to a ' +
+    'known-good exit (often residential or HTTP), or run TubeVault where ' +
+    '`curl -I https://hanime.tv` returns 200 without a challenge page. ' +
+    'Playwright cannot fix this (needs Deno/WASM plugin, not browser intercept).'
+  )
+}
+
+/** Resolve which proxy (if any) hanime-family will use under default policy. */
+function resolveHanimeProxyForProbe(): string | undefined {
+  if (config.hanimeProxyServer) return config.hanimeProxyServer
+  if (config.playwrightProxyServer && !config.hanimeBypassProxy) {
+    return config.playwrightProxyServer
+  }
+  return undefined
+}
+
 export async function fetchMetadata(url: string, signal?: AbortSignal): Promise<{
   title: string
   duration?: number
@@ -359,21 +509,45 @@ export async function fetchMetadata(url: string, signal?: AbortSignal): Promise<
   extractor?: string
   uploader?: string
 }> {
-  const args = [...await buildBaseArgs(url), '--dump-single-json', url]
-  const { stdout, stderr } = await runYtDlp(args, { signal })
+  if (needsFfmpegHlsDownloader(url)) {
+    const proxy = resolveHanimeProxyForProbe()
+    const probe = await probeHanimeEgress(proxy)
+    if (probe.ok) {
+      console.log(
+        `[downloader] hanime preflight OK (HTTP ${probe.status}` +
+          `${proxy ? ` via ${redactProxyUrl(proxy)}` : ' direct'})`
+      )
+    } else {
+      console.warn(
+        `[downloader] hanime preflight FAILED` +
+          `${probe.status ? ` HTTP ${probe.status}` : ''}` +
+          `${proxy ? ` via ${redactProxyUrl(proxy)}` : ' direct'}` +
+          `${probe.error ? ` — ${probe.error}` : ''}` +
+          `${probe.snippet ? ` body≈${JSON.stringify(probe.snippet)}` : ''}. ` +
+          'If yt-dlp then 403s, set HANIME_PROXY_SERVER to a CF-clean exit.'
+      )
+    }
+  }
 
   try {
-    const data = JSON.parse(stdout)
-    return {
-      title: data.title || 'untitled',
-      duration: data.duration ? Math.round(data.duration) : undefined,
-      thumbnail: data.thumbnail,
-      ext: data.ext,
-      extractor: data.extractor,
-      uploader: data.uploader || data.channel || data.uploader_id,
+    const args = [...await buildBaseArgs(url), '--dump-single-json', url]
+    const { stdout, stderr } = await runYtDlp(args, { signal })
+
+    try {
+      const data = JSON.parse(stdout)
+      return {
+        title: data.title || 'untitled',
+        duration: data.duration ? Math.round(data.duration) : undefined,
+        thumbnail: data.thumbnail,
+        ext: data.ext,
+        extractor: data.extractor,
+        uploader: data.uploader || data.channel || data.uploader_id,
+      }
+    } catch (err) {
+      throw new Error(`Failed to parse yt-dlp metadata: ${err instanceof Error ? err.message : 'unknown'}; stderr: ${stderr.slice(0, 500)}`)
     }
-  } catch (err) {
-    throw new Error(`Failed to parse yt-dlp metadata: ${err instanceof Error ? err.message : 'unknown'}; stderr: ${stderr.slice(0, 500)}`)
+  } catch (err: any) {
+    throw new Error(annotateHanime403(err?.message || String(err)))
   }
 }
 
@@ -563,23 +737,49 @@ async function downloadWithYtDlp(
       ? '720p/best/480p/360p/bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/worst'
       : 'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best/best*[ext=mp4]/worst')
 
-  const args = [
-    ...await buildBaseArgs(url),
-    '-f', formatSelector,
-    '--merge-output-format', 'mp4',
-    '--remux-video', 'mp4',
-    '--max-filesize', String(config.maxFileSizeBytes),
-    '--output', outTemplate,
-    url,
-  ]
-
   if (needsFfmpegHlsDownloader(url) && !config.ytDlpFormat) {
     console.log(`[downloader] hanime-family format selector: ${formatSelector} (prefer 720p)`)
   } else if (config.ytDlpFormat) {
     console.log(`[downloader] using YTDLP_FORMAT override: ${formatSelector}`)
   }
 
-  await runYtDlp(args, { signal, onProgress })
+  const runOnce = async (opts?: BuildBaseArgsOptions) => {
+    const args = [
+      ...await buildBaseArgs(url, opts),
+      '-f', formatSelector,
+      '--merge-output-format', 'mp4',
+      '--remux-video', 'mp4',
+      '--max-filesize', String(config.maxFileSizeBytes),
+      '--output', outTemplate,
+      url,
+    ]
+    await runYtDlp(args, { signal, onProgress })
+  }
+
+  try {
+    await runOnce()
+  } catch (err: any) {
+    const msg = err?.message || String(err)
+    // If cookies were forced on and CF 403'd, retry once without cookies.
+    if (
+      needsFfmpegHlsDownloader(url) &&
+      isHttp403Error(msg) &&
+      config.hanimeUseCookies
+    ) {
+      console.warn(
+        '[downloader] hanime 403 with cookies — retrying once without YTDLP_COOKIES_FILE'
+      )
+      try {
+        await runOnce({ forceCookies: false })
+      } catch (err2: any) {
+        throw new Error(annotateHanime403(err2?.message || String(err2)))
+      }
+    } else if (needsFfmpegHlsDownloader(url) && isHttp403Error(msg)) {
+      throw new Error(annotateHanime403(msg))
+    } else {
+      throw err
+    }
+  }
 
   const entries = (await readdir(workDir)).map((name) => join(workDir, name))
   const fileStats = await Promise.all(
@@ -620,8 +820,8 @@ function shouldTryPlaywrightFallback(url: string, errorMessage: string): boolean
       '[downloader] skipping Playwright fallback for hanime-family ' +
         '(needs Deno/WASM plugin + ffmpeg HLS, not browser intercept)' +
         (cf403
-          ? '. HTTP 403 usually means the egress IP is Cloudflare-blocked — ' +
-            'hanime defaults to direct (no proxy); if you forced HANIME_BYPASS_PROXY=false, try direct or another exit'
+          ? '. HTTP 403 = Cloudflare blocked this egress. Defaults: no global SOCKS, no cookies. ' +
+            'Fix: HANIME_PROXY_SERVER=<cf-clean exit> or host egress that can open https://hanime.tv'
           : '')
     )
     return false
