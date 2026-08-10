@@ -115,9 +115,10 @@ npm start
 | `YTDLP_REFERER` | No | Force a Referer header |
 | `YTDLP_CUSTOM_ARGS` | No | Extra args passed to yt-dlp |
 | `YTDLP_IMPERSONATE` | No | TLS fingerprint target for yt-dlp (default `chrome`; requires `curl_cffi`). Set empty to disable. Fixes PornHub HTTP 410 |
-| `HANIME_BYPASS_PROXY` | No | Skip `PLAYWRIGHT_PROXY_SERVER` for hanime-family (default `true`). Cloudflare often 403s SOCKS exits that still work for PornHub; set `false` only if your exit is known-good for hanime |
+| `HANIME_BYPASS_PROXY` | No | First hop order when dual-pathing. Default `true` = direct then `PLAYWRIGHT_PROXY_SERVER`. Set `false` to try home SOCKS first (recommended when browser on that SOCKS opens hanime) |
 | `HANIME_PROXY_SERVER` | No | Dedicated proxy **only** for hanime-family yt-dlp (overrides global proxy for those hosts). Use when container direct egress is CF-blocked |
-| `HANIME_USE_COOKIES` | No | Pass `YTDLP_COOKIES_FILE` to hanime jobs (default `false`). Plugin uses WASM handshake; multi-site cookies often cause CF 403 |
+| `HANIME_USE_COOKIES` | No | Pass cookies to hanime (default `false` — not needed). If true, domain-filters to hanime hosts only so PornHub cookies are never imported |
+| `HANIME_FORCE_IPV4` | No | Force IPv4 for hanime (default `true`). Fixes SOCKS IPv6-unreachable CF challenge hosts |
 | `PLAYWRIGHT_FALLBACK_ENABLED` | No | Browser fallback when yt-dlp fails (default `true`) |
 | `PLAYWRIGHT_FALLBACK_SITES` | No | Optional hostname regex allowlist. **Empty (default) = try fallback on any host** after yt-dlp fails |
 | `PLAYWRIGHT_HEADLESS` | No | Run Chromium headless (default `true`) |
@@ -180,17 +181,26 @@ If Deno is missing from PATH or the plugin is absent, logs will show extractor/D
 
 ### Cloudflare 403 on hanime
 
-If logs show the SOCKS bypass active but yt-dlp still returns `HTTP Error 403`:
+TubeVault dual-paths hanime egress automatically:
 
-1. Confirm container direct egress: `docker compose exec tubevault curl -sI https://hanime.tv | head`
-2. Prefer **no cookies** for hanime (default). Do not set `HANIME_USE_COOKIES=true` unless you have fresh hanime.tv cookies only.
-3. If direct is blocked, set a CF-clean exit just for hanime:
+1. **No hanime cookies required.** Default `HANIME_USE_COOKIES=false`. PornHub-only `cookies.txt` is never imported into hanime jobs (domain-filtered if you force cookies).
+2. **Home SOCKS that works in your browser is the right exit.** Set:
    ```bash
-   HANIME_PROXY_SERVER=socks5://user:pass@residential-host:1080
-   # or an HTTP proxy endpoint from your provider
+   HANIME_BYPASS_PROXY=false   # try PLAYWRIGHT_PROXY_SERVER (home IP) first
    ```
-4. Playwright cannot fix hanime - it needs the Deno/WASM plugin path.
+   Or leave defaults: direct first, then auto-retry via `PLAYWRIGHT_PROXY_SERVER` on 403.
+3. **IPv4 forced by default** (`HANIME_FORCE_IPV4=true`). SOCKS logs like
+   `Connect to brunhild.challenges.cloudflare.com ([2606:4700::…]): network is unreachable`
+   mean the proxy has no IPv6 — fixed without config.
+4. **Chrome TLS impersonation** is applied to the Cloudflare HTML fetch (`--impersonate chrome`). Rebuild so `curl_cffi` is present:
+   `docker compose exec tubevault yt-dlp --list-impersonate-targets`
+5. Under SOCKS, HLS uses **native** fragments (ffmpeg cannot speak SOCKS).
+6. Playwright cannot fix hanime — it needs the Deno/WASM plugin path.
 
+Optional single exit (disables dual-path):
+```bash
+HANIME_PROXY_SERVER=socks5://user:pass@home-host:1080
+```
 
 ## Sites yt-dlp cannot extract (Playwright fallback)
 

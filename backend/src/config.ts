@@ -79,18 +79,23 @@ export const config = {
     : process.env.YTDLP_IMPERSONATE.trim(),
 
   /**
-   * hanime.tv (and related plugin hosts) sit behind Cloudflare. Many SOCKS exits that
-   * work for PornHub still get HTTP 403 on hanime while the TubeVault host's direct
-   * egress succeeds. Default true = do NOT send PLAYWRIGHT_PROXY_SERVER to yt-dlp for
-   * those hosts. Set HANIME_BYPASS_PROXY=false to force the global proxy on them too.
+   * Preferred first hop for hanime-family when PLAYWRIGHT_PROXY_SERVER is set and
+   * HANIME_PROXY_SERVER is empty.
+   *
+   * Default true = try **direct container egress first**, then auto-retry via the
+   * global proxy on HTTP 403 / CF block.
+   * Set HANIME_BYPASS_PROXY=false to try the global proxy first (home/residential
+   * SOCKS that can open hanime.tv in a browser), then fall back to direct.
+   *
+   * Either way TubeVault dual-paths on 403 — you should not need to flip this unless
+   * you want to skip a known-bad first hop.
    */
   hanimeBypassProxy: process.env.HANIME_BYPASS_PROXY !== 'false',
 
   /**
    * Optional dedicated proxy used ONLY for hanime-family yt-dlp jobs.
-   * Takes precedence over PLAYWRIGHT_PROXY_SERVER for those hosts.
-   * Use when the container's direct egress is Cloudflare-blocked but a different
-   * exit (often residential / HTTP) can open hanime.tv.
+   * Takes precedence over PLAYWRIGHT_PROXY_SERVER for those hosts and disables
+   * dual-path (single explicit exit).
    * Example: socks5://user:pass@host:1080  or  http://user:pass@host:8080
    */
   hanimeProxyServer: (process.env.HANIME_PROXY_SERVER || '').trim(),
@@ -98,11 +103,21 @@ export const config = {
   /**
    * Whether to pass YTDLP_COOKIES_FILE to hanime-family jobs.
    * Default false — the HanimeTV plugin uses a Deno/WASM handshake and does not need
-   * browser cookies. A multi-site cookies.txt (e.g. PornHub + stale cf_clearance) can
-   * poison Cloudflare on the container egress and produce HTTP 403.
-   * Set HANIME_USE_COOKIES=true only if you intentionally synced fresh hanime.tv cookies.
+   * browser cookies. A multi-site cookies.txt (e.g. PornHub only) is never required.
+   * Set HANIME_USE_COOKIES=true only with fresh hanime.tv cookies; TubeVault will
+   * domain-filter the file so PornHub cookies are not sent to Cloudflare.
    */
   hanimeUseCookies: process.env.HANIME_USE_COOKIES === 'true',
+
+  /**
+   * Force IPv4 for hanime-family yt-dlp (`--force-ipv4`).
+   * Default true. SOCKS exits without IPv6 fail CF challenge hosts with:
+   *   Connect to brunhild.challenges.cloudflare.com ([2606:4700::…]):443
+   *   failed: network is unreachable
+   * Browser on the same home IP still works because the OS prefers IPv4 / has v6.
+   * Set HANIME_FORCE_IPV4=false only if your exit is IPv6-only.
+   */
+  hanimeForceIpv4: process.env.HANIME_FORCE_IPV4 !== 'false',
 
   // Playwright fallback for any site yt-dlp cannot handle (JS players, age gates, HLS embeds).
   // When yt-dlp fails, TubeVault launches Chromium, intercepts network traffic,
