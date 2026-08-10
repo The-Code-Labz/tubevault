@@ -2,8 +2,13 @@ version: '3.8'
 
 # Simple Docker Compose for machines without Traefik.
 # Usage:
+#   cp .env.example .env   # then fill secrets + proxy
 #   docker compose -f docker-compose.simple.yml up --build -d
 # Then open http://localhost:4050
+#
+# Env reload: edit .env then
+#   docker compose -f docker-compose.simple.yml up -d --force-recreate
+# (env_file is re-read on recreate — see Fix Docker Compose Env Loading)
 
 services:
   tubevault:
@@ -18,8 +23,54 @@ services:
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=${PORT:-4050}
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-supabase}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - SUPABASE_BUCKET=${SUPABASE_BUCKET:-videos}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SIGNED_URL_TTL_SECONDS=${SUPABASE_SIGNED_URL_TTL_SECONDS:-3600}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - R2_ENDPOINT=${R2_ENDPOINT}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
+      - R2_BUCKET=${R2_BUCKET:-videos}
+      - R2_PUBLIC_URL=${R2_PUBLIC_URL}
+      - ALLOWED_ORIGIN=${ALLOWED_ORIGIN:-}
+      - MAX_FILE_SIZE_BYTES=${MAX_FILE_SIZE_BYTES:-5368709120}
+      - MAX_CONCURRENT_DOWNLOADS=${MAX_CONCURRENT_DOWNLOADS:-2}
       - DOWNLOAD_DIR=${DOWNLOAD_DIR:-/app/data/downloads}
       - DB_PATH=${DB_PATH:-/app/data/videos.json}
+
+      # yt-dlp
+      - YTDLP_AUTO_UPDATE=${YTDLP_AUTO_UPDATE:-true}
+      - YTDLP_FORMAT=${YTDLP_FORMAT:-}
+      - YTDLP_USER_AGENT=${YTDLP_USER_AGENT:-}
+      - YTDLP_COOKIES_FROM_BROWSER=${YTDLP_COOKIES_FROM_BROWSER:-}
+      - YTDLP_COOKIES_FILE=${YTDLP_COOKIES_FILE:-}
+      - YTDLP_REFERER=${YTDLP_REFERER:-}
+      - YTDLP_CUSTOM_ARGS=${YTDLP_CUSTOM_ARGS:-}
+      - YTDLP_IMPERSONATE=${YTDLP_IMPERSONATE:-chrome}
+
+      # Playwright fallback (not used for hanime-family)
+      - PLAYWRIGHT_FALLBACK_ENABLED=${PLAYWRIGHT_FALLBACK_ENABLED:-true}
+      - PLAYWRIGHT_FALLBACK_SITES=${PLAYWRIGHT_FALLBACK_SITES:-}
+      - PLAYWRIGHT_HEADLESS=${PLAYWRIGHT_HEADLESS:-true}
+      - PLAYWRIGHT_TIMEOUT_MS=${PLAYWRIGHT_TIMEOUT_MS:-60000}
+      - PLAYWRIGHT_STEALTH=${PLAYWRIGHT_STEALTH:-false}
+      - PLAYWRIGHT_USER_AGENT=${PLAYWRIGHT_USER_AGENT:-}
+      - PLAYWRIGHT_PROXY_SERVER=${PLAYWRIGHT_PROXY_SERVER:-}
+      - PLAYWRIGHT_COOKIES_FILE=${PLAYWRIGHT_COOKIES_FILE:-}
+      - PLAYWRIGHT_COOKIES_SAMESITE=${PLAYWRIGHT_COOKIES_SAMESITE:-Lax}
+      - PLAYWRIGHT_EXTRA_ARGS=${PLAYWRIGHT_EXTRA_ARGS:-}
+
+      # Hanime-family
+      # Set HANIME_BYPASS_PROXY=false in .env to try home SOCKS first
+      - HANIME_BYPASS_PROXY=${HANIME_BYPASS_PROXY:-true}
+      - HANIME_PROXY_SERVER=${HANIME_PROXY_SERVER:-}
+      - HANIME_USE_COOKIES=${HANIME_USE_COOKIES:-false}
+      - HANIME_FORCE_IPV4=${HANIME_FORCE_IPV4:-true}
     volumes:
       - ./data:/app/data
+      # Optional cookies for non-hanime age-gated sites:
+      # - ./cookies.txt:/app/data/cookies.txt:ro
     restart: unless-stopped

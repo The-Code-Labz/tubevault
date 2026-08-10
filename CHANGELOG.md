@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- **compose env wiring:** `docker-compose.yml` and `docker-compose.simple.yml` now pass `YTDLP_IMPERSONATE`, `PLAYWRIGHT_COOKIES_SAMESITE`, and all hanime vars (`HANIME_BYPASS_PROXY`, `HANIME_PROXY_SERVER`, `HANIME_USE_COOKIES`, `HANIME_FORCE_IPV4`). Both load `.env` via `env_file` so recreate picks up new keys. `.env.example` recommends `HANIME_BYPASS_PROXY=false` + `HANIME_USE_COOKIES=false` + `HANIME_FORCE_IPV4=true` for home-SOCKS deploys.
+
 ### Fixed
 - **hanime home-SOCKS + no cookies + IPv6 CF challenge:** when the SOCKS exit is your home IP (browser works) but yt-dlp still 403s: (1) dual-path egress auto-retries direct ↔ `PLAYWRIGHT_PROXY_SERVER` on CF/403, (2) hanime now uses `--impersonate chrome` for the Cloudflare HTML hop (was skipped), (3) default `--force-ipv4` fixes SOCKS `brunhild.challenges.cloudflare.com ([2606:4700::…]) network is unreachable`, (4) under SOCKS use native HLS (`--hls-prefer-native`) because ffmpeg cannot speak SOCKS, (5) cookies stay off by default and are domain-filtered if forced — PornHub-only `cookies.txt` is never imported into hanime jobs. Set `HANIME_BYPASS_PROXY=false` to try home SOCKS first.
 

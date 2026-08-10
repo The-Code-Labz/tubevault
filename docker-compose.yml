@@ -15,6 +15,11 @@ services:
       - "traefik.http.services.tubevault.loadbalancer.server.port=4050"
       - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik}"
       - "traefik.http.routers.tubevault.service=tubevault"
+    # Load host .env into the container (see Fix Docker Compose Env Loading).
+    # Explicit `environment:` below still wins on key collision and supplies defaults.
+    # File is optional at parse time only if present next to this compose file.
+    env_file:
+      - .env
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=${PORT:-4050}
@@ -35,30 +40,46 @@ services:
       - MAX_CONCURRENT_DOWNLOADS=${MAX_CONCURRENT_DOWNLOADS:-2}
       - DOWNLOAD_DIR=${DOWNLOAD_DIR:-/app/data/downloads}
       - DB_PATH=${DB_PATH:-/app/data/videos.json}
+
+      # yt-dlp
       - YTDLP_AUTO_UPDATE=${YTDLP_AUTO_UPDATE:-true}
-      - YTDLP_FORMAT=${YTDLP_FORMAT}
-      - YTDLP_USER_AGENT=${YTDLP_USER_AGENT}
-      - YTDLP_COOKIES_FROM_BROWSER=${YTDLP_COOKIES_FROM_BROWSER}
-      - YTDLP_COOKIES_FILE=${YTDLP_COOKIES_FILE}
-      - YTDLP_REFERER=${YTDLP_REFERER}
-      - YTDLP_CUSTOM_ARGS=${YTDLP_CUSTOM_ARGS}
+      - YTDLP_FORMAT=${YTDLP_FORMAT:-}
+      - YTDLP_USER_AGENT=${YTDLP_USER_AGENT:-}
+      - YTDLP_COOKIES_FROM_BROWSER=${YTDLP_COOKIES_FROM_BROWSER:-}
+      - YTDLP_COOKIES_FILE=${YTDLP_COOKIES_FILE:-}
+      - YTDLP_REFERER=${YTDLP_REFERER:-}
+      - YTDLP_CUSTOM_ARGS=${YTDLP_CUSTOM_ARGS:-}
+      # TLS fingerprint (curl_cffi). Default chrome — fixes PornHub HTTP 410. Empty disables.
+      - YTDLP_IMPERSONATE=${YTDLP_IMPERSONATE:-chrome}
+
+      # Playwright fallback (NOT used for hanime-family — Deno/WASM + ffmpeg HLS)
       - PLAYWRIGHT_FALLBACK_ENABLED=${PLAYWRIGHT_FALLBACK_ENABLED:-true}
       - PLAYWRIGHT_FALLBACK_SITES=${PLAYWRIGHT_FALLBACK_SITES:-}
       - PLAYWRIGHT_HEADLESS=${PLAYWRIGHT_HEADLESS:-true}
       - PLAYWRIGHT_TIMEOUT_MS=${PLAYWRIGHT_TIMEOUT_MS:-60000}
       - PLAYWRIGHT_STEALTH=${PLAYWRIGHT_STEALTH:-false}
-      - PLAYWRIGHT_USER_AGENT=${PLAYWRIGHT_USER_AGENT}
-      - PLAYWRIGHT_PROXY_SERVER=${PLAYWRIGHT_PROXY_SERVER}
+      - PLAYWRIGHT_USER_AGENT=${PLAYWRIGHT_USER_AGENT:-}
+      # Global proxy for yt-dlp + Playwright + direct media (PH, etc.).
+      # socks5://user:pass@host:1080  → Playwright auto-bridges via local HTTP.
+      - PLAYWRIGHT_PROXY_SERVER=${PLAYWRIGHT_PROXY_SERVER:-}
+      - PLAYWRIGHT_COOKIES_FILE=${PLAYWRIGHT_COOKIES_FILE:-}
+      - PLAYWRIGHT_COOKIES_SAMESITE=${PLAYWRIGHT_COOKIES_SAMESITE:-Lax}
+      - PLAYWRIGHT_EXTRA_ARGS=${PLAYWRIGHT_EXTRA_ARGS:-}
+
+      # Hanime-family (hanime.tv, hentaihaven, hstream, …)
+      # true  = try container direct first, then PLAYWRIGHT_PROXY_SERVER on CF 403
+      # false = try home SOCKS (PLAYWRIGHT_PROXY_SERVER) first — set this when browser on that SOCKS opens hanime
       - HANIME_BYPASS_PROXY=${HANIME_BYPASS_PROXY:-true}
+      # Optional dedicated exit ONLY for hanime (single hop; disables dual-path)
       - HANIME_PROXY_SERVER=${HANIME_PROXY_SERVER:-}
+      # Do NOT import multi-site cookies.txt into hanime (default false — no hanime cookies needed)
       - HANIME_USE_COOKIES=${HANIME_USE_COOKIES:-false}
+      # Force IPv4 — fixes SOCKS "brunhild.challenges.cloudflare.com AAAA network is unreachable"
       - HANIME_FORCE_IPV4=${HANIME_FORCE_IPV4:-true}
-      - PLAYWRIGHT_COOKIES_FILE=${PLAYWRIGHT_COOKIES_FILE}
-      - PLAYWRIGHT_EXTRA_ARGS=${PLAYWRIGHT_EXTRA_ARGS}
     volumes:
       - ./data:/app/data
-      # Optional: mount exported cookies.txt file if you need authenticated/age-gated downloads.
-      # Make sure the path matches YTDLP_COOKIES_FILE or PLAYWRIGHT_COOKIES_FILE.
+      # Optional: mount exported cookies.txt for authenticated/age-gated (non-hanime) downloads.
+      # Path must match YTDLP_COOKIES_FILE / PLAYWRIGHT_COOKIES_FILE inside the container.
       # - ./cookies.txt:/app/data/cookies.txt:ro
     restart: unless-stopped
 
