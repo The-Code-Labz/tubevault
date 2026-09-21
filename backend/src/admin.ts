@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { config } from './config.js'
 import { getAuthClient } from './auth.js'
 import { ingestChromeCookies } from './cookies.js'
+import { getYtDlpVersion, updateYtDlp } from './downloader.js'
 
 const inviteSchema = z.object({
   email: z.string().email(),
@@ -104,5 +105,20 @@ adminRouter.post('/cookies', requireAdminKey, async (req: Request, res: Response
     }
     console.error('Cookie sync failed:', err)
     res.status(500).json({ error: 'Failed to sync cookies' })
+  }
+})
+
+// Manual yt-dlp update trigger — the pip-installed binary can't self-replace via
+// `-U` (see downloader.ts updateYtDlp()), so this drives the pip-upgrade fallback
+// on demand instead of waiting for the startup check or the periodic re-check.
+adminRouter.post('/update-ytdlp', requireAdminKey, async (_req: Request, res: Response) => {
+  try {
+    const before = await getYtDlpVersion().catch(() => null)
+    const result = await updateYtDlp()
+    const after = await getYtDlpVersion().catch(() => null)
+    res.status(200).json({ ok: true, result, before, after })
+  } catch (err: any) {
+    console.error('yt-dlp update failed:', err)
+    res.status(500).json({ error: err.message || 'Failed to update yt-dlp' })
   }
 })

@@ -56,6 +56,12 @@ This vault has no public self-signup. There are two parts to that, and only one 
    ```
    Supabase emails the invitee a link to set their own password; after that they sign in normally at the TubeVault URL.
 
+**Manually trigger a yt-dlp update:** the server auto-checks on startup and every `YTDLP_UPDATE_INTERVAL_HOURS` (default 24h), but you can force it on demand (same `X-Admin-Key` auth):
+```bash
+curl -X POST https://<host>/api/admin/update-ytdlp -H "X-Admin-Key: $ADMIN_API_KEY"
+```
+Returns the version before/after so you can confirm it actually moved.
+
 **Storage bucket:** if `STORAGE_BACKEND=supabase` (the default), the backend creates `SUPABASE_BUCKET` (default `videos`) automatically on first boot, **as a private bucket**. Video files are never given a permanent public URL — `GET /api/videos/:id/stream` mints a fresh short-lived [signed URL](https://supabase.com/docs/guides/storage/serving/downloads#signed-urls) (default 1 hour TTL, override with `SUPABASE_SIGNED_URL_TTL_SECONDS`) on every authenticated, ownership-checked request instead. Nothing is cached or stored server-side.
 
 > **Upgrading from an older TubeVault** (pre-signed-URL fix): earlier versions created this bucket with `public: true`, meaning anyone who obtained/guessed an object key could pull the video directly with no auth. On startup, the backend now detects an existing public bucket and automatically flips it to private via `updateBucket()` (yes — despite some older docs implying otherwise, the Supabase JS client **can** toggle a bucket's public/private flag after creation; no dashboard visit required). This stops new unsigned access immediately. It does **not** retroactively revoke URLs that were already shared, cached by a browser/proxy, or crawled before the flip — if you suspect any object keys leaked while the bucket was public, re-upload those videos (new storage key) or delete + redownload them.
@@ -107,7 +113,9 @@ npm start
 | `ALLOWED_ORIGIN` | No | Comma-separated list of origins allowed to call the API cross-origin. Empty = same-origin only |
 | `MAX_FILE_SIZE_BYTES` | No | Max download size (default 5GB), also passed to yt-dlp's `--max-filesize` |
 | `MAX_CONCURRENT_DOWNLOADS` | No | Enforced parallel-job limit (default 2) |
-| `YTDLP_AUTO_UPDATE` | No | Run `yt-dlp -U` on startup (default `true`) |
+| `YTDLP_AUTO_UPDATE` | No | Check/apply a yt-dlp update on startup + periodically (default `true`). The image installs yt-dlp via pip, so `yt-dlp -U` alone can never actually update it — it refuses to self-replace a pip install; TubeVault detects that refusal and falls back to `pip3 install --upgrade` |
+| `YTDLP_UPDATE_INTERVAL_HOURS` | No | Re-check for an update every N hours on top of the startup check, so a long-lived container doesn't stay pinned to the build-time version (default `24`, `0` disables) |
+| `YTDLP_PIP_BIN` / `YTDLP_PIP_PACKAGE` / `YTDLP_PIP_EXTRA_ARGS` | No | Override the pip binary/package spec used for the fallback upgrade (default `pip3` / `yt-dlp[default,curl-cffi]`) |
 | `YTDLP_FORMAT` | No | Override format selector |
 | `YTDLP_USER_AGENT` | No | Set a browser user-agent |
 | `YTDLP_COOKIES_FROM_BROWSER` | No | e.g. `firefox`, `chrome` |

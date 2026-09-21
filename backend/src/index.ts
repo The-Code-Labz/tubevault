@@ -204,23 +204,38 @@ app.get('*', (_req, res) => {
 async function main() {
   validateConfig()
 
-  try {
-    const updateResult = await updateYtDlp()
-    console.log(`yt-dlp: ${updateResult}`)
-  } catch (err: any) {
-    console.warn(`yt-dlp update check failed: ${err.message}`)
+  async function runYtDlpUpdate() {
+    try {
+      const updateResult = await updateYtDlp()
+      console.log(`yt-dlp: ${updateResult}`)
+    } catch (err: any) {
+      console.warn(`yt-dlp update check failed: ${err.message}`)
+    }
   }
+
+  await runYtDlpUpdate()
 
   const server = app.listen(config.port, () => {
     console.log(`TubeVault API running on http://localhost:${config.port}`)
     console.log(`Storage backend: ${config.storageBackend}`)
   })
 
+  // A container that runs for weeks previously only ever got the yt-dlp version
+  // baked in at the last `docker build` (startup update alone doesn't help a
+  // long-lived process). Re-check periodically so extractor fixes for sites that
+  // start failing mid-uptime actually land without a manual restart.
+  let updateInterval: NodeJS.Timeout | undefined
+  if (config.ytDlpAutoUpdate && config.ytDlpUpdateIntervalHours > 0) {
+    updateInterval = setInterval(runYtDlpUpdate, config.ytDlpUpdateIntervalHours * 60 * 60 * 1000)
+    updateInterval.unref()
+  }
+
   let shuttingDown = false
   function shutdown(signal: string) {
     if (shuttingDown) return
     shuttingDown = true
     console.log(`Received ${signal}, shutting down gracefully...`)
+    if (updateInterval) clearInterval(updateInterval)
     shutdownActiveJobs()
     server.close(() => process.exit(0))
     // Force-exit if something keeps the event loop alive.

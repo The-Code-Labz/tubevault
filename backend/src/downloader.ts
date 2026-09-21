@@ -112,18 +112,15 @@ export async function getYtDlpVersion(): Promise<YtDlpVersion> {
   })
 }
 
-export async function updateYtDlp(): Promise<string> {
-  if (!config.ytDlpAutoUpdate) {
-    return 'auto-update disabled'
-  }
+function runChild(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(config.ytDlpPath, ['-U'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
-      reject(new Error('yt-dlp update timed out after 60s'))
-    }, 60000)
+      reject(new Error(`${cmd} ${args.join(' ')} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
     child.stdout.on('data', (d) => (stdout += d.toString()))
     child.stderr.on('data', (d) => (stderr += d.toString()))
     child.on('error', (err) => {
@@ -132,13 +129,64 @@ export async function updateYtDlp(): Promise<string> {
     })
     child.on('close', (code) => {
       clearTimeout(timer)
-      if (code === 0 || stdout.includes('Updated yt-dlp') || stdout.includes('up to date')) {
-        resolve(stdout.trim() || 'yt-dlp up to date')
-      } else {
-        reject(new Error(`yt-dlp update failed (${code}): ${stderr || stdout || 'unknown'}`))
-      }
+      resolve({ code, stdout, stderr })
     })
   })
+}
+
+// yt-dlp's own `-U` self-updater refuses to touch a pip-managed install (it exits
+// 100 with "You installed yt-dlp with pip or using the wheel from PyPi; Use that to
+// update") — our Dockerfile installs via pip3, so `-U` alone can only ever confirm
+// "already up to date", it can never actually apply a real update. When it hits
+// that specific refusal (or any non-zero/non-"up to date" exit), fall back to
+// `pip3 install --upgrade` directly so updates actually land at runtime.
+const PIP_MANAGED_MARKER = 'installed yt-dlp with pip'
+
+export async function updateYtDlp(): Promise<string> {
+  if (!config.ytDlpAutoUpdate) {
+    return 'auto-update disabled'
+  }
+
+  const before = await getYtDlpVersion().catch(() => null)
+
+  const selfUpdate = await runChild(config.ytDlpPath, ['-U'], 60000)
+  const selfUpdateOk =
+    selfUpdate.code === 0 ||
+    selfUpdate.stdout.includes('Updated yt-dlp') ||
+    selfUpdate.stdout.includes('up to date')
+
+  if (selfUpdateOk && !selfUpdate.stderr.includes(PIP_MANAGED_MARKER)) {
+    return selfUpdate.stdout.trim() || 'yt-dlp up to date'
+  }
+
+  const isPipManaged =
+    selfUpdate.stderr.includes(PIP_MANAGED_MARKER) || selfUpdate.stdout.includes(PIP_MANAGED_MARKER)
+
+  if (!isPipManaged) {
+    throw new Error(
+      `yt-dlp update failed (${selfUpdate.code}): ${selfUpdate.stderr || selfUpdate.stdout || 'unknown'}`
+    )
+  }
+
+  console.log('[downloader] yt-dlp is pip-managed; -U cannot self-replace it, upgrading via pip instead')
+  const pipArgs = [
+    'install',
+    '--break-system-packages',
+    '--upgrade',
+    '--quiet',
+    ...config.ytDlpPipExtraArgs,
+    config.ytDlpPipPackage,
+  ]
+  const pipUpdate = await runChild(config.ytDlpPipBin, pipArgs, 120000)
+  if (pipUpdate.code !== 0) {
+    throw new Error(`pip yt-dlp upgrade failed (${pipUpdate.code}): ${pipUpdate.stderr || pipUpdate.stdout || 'unknown'}`)
+  }
+
+  const after = await getYtDlpVersion().catch(() => null)
+  if (before && after && before.version !== after.version) {
+    return `pip upgrade: ${before.version} -> ${after.version}`
+  }
+  return after ? `pip upgrade check ok (version: ${after.version})` : 'pip upgrade check ok'
 }
 
 type ParsedCookie = {

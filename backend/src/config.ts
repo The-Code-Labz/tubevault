@@ -63,6 +63,20 @@ export const config = {
 
   ytDlpPath: process.env.YTDLP_PATH || 'yt-dlp',
   ytDlpAutoUpdate: process.env.YTDLP_AUTO_UPDATE !== 'false',
+  /**
+   * The Dockerfile installs yt-dlp via `pip3 install`, not the standalone binary
+   * release. `yt-dlp -U` refuses to self-replace a pip install (exits 100 with
+   * "You installed yt-dlp with pip ... Use that to update") — so on its own it can
+   * only ever confirm "up to date", never actually apply a real update. When that
+   * happens updateYtDlp() falls back to invoking pip directly.
+   */
+  ytDlpPipBin: process.env.YTDLP_PIP_BIN || 'pip3',
+  ytDlpPipPackage: process.env.YTDLP_PIP_PACKAGE || 'yt-dlp[default,curl-cffi]',
+  ytDlpPipExtraArgs: parseCustomArgs(process.env.YTDLP_PIP_EXTRA_ARGS),
+  // Re-check for a yt-dlp update every N hours on top of the startup check, so a
+  // long-lived container picks up extractor fixes without needing a restart.
+  // Set to 0 to disable the periodic re-check (startup check still runs).
+  ytDlpUpdateIntervalHours: Math.max(0, parseInt(process.env.YTDLP_UPDATE_INTERVAL_HOURS || '24', 10)),
   ytDlpFormat: process.env.YTDLP_FORMAT || '',
   ytDlpUserAgent: process.env.YTDLP_USER_AGENT || '',
   ytDlpCookiesFromBrowser: process.env.YTDLP_COOKIES_FROM_BROWSER || '',
