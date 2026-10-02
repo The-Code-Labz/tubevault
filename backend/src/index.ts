@@ -16,6 +16,7 @@ import {
 import { z } from 'zod'
 import { requireAuth, type AuthedRequest } from './auth.js'
 import { adminRouter } from './admin.js'
+import { agentRouter } from './agent.js'
 import { assertSafeDownloadUrl } from './url-safety.js'
 import type { StorageBackend } from './types.js'
 
@@ -65,6 +66,16 @@ app.get('/api/config', (_req, res) => {
 // Larger body limit than the default 100kb: a full browser cookie export across
 // several logged-in sites can run a few hundred KB.
 app.use('/api/admin', express.json({ limit: '1mb' }), adminRouter)
+
+// Agent-only surface, gated by X-Agent-Key (AGENT_API_KEY). Lets a NeuroClaw-style
+// agent start a download, poll status, choose a storage backend, and pull the
+// finished file — without a Supabase session. Not mounted at all unless
+// AGENT_API_KEY is set, so existing deployments are unaffected by default.
+if (config.agentApiKey) {
+  app.use('/api/agent', express.json({ limit: '100kb' }), agentRouter)
+} else {
+  console.warn('[agent] AGENT_API_KEY not set — /api/agent/* routes are disabled')
+}
 
 // Every /api/videos* route requires a valid Supabase session.
 app.use('/api/videos', requireAuth)

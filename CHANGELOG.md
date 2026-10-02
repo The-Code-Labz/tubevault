@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+- **Agent API (`/api/agent/*`):** lets a script/agent start a download, choose a storage backend, poll status, pull the finished file, and delete it — without a Supabase session. Gated by `X-Agent-Key` (`AGENT_API_KEY`, separate from `ADMIN_API_KEY`, no invite/cookie-sync/update powers). Not mounted unless `AGENT_API_KEY` is set. Downloads created this way are owned by a reserved internal id, isolated from real users.
+
+### Fixed
+- **Misleading errors on unrelated sites:** `fetchMetadata`'s error handler unconditionally ran every failure through the hanime-specific annotator, whose matcher (`isHanimeEgressError`) fires on generic yt-dlp phrases like "Unable to download webpage" — present in nearly any failed download. A plain 404 on an unrelated site was getting a hanime SOCKS/IPv6/cookie troubleshooting paragraph appended to its error message. Now scoped to actual hanime-family URLs only.
+- Removed a duplicated/garbled tail in README.md (stray leftover paragraph after the License section).
+
 ### Changed
 - **compose env wiring:** `docker-compose.yml` and `docker-compose.simple.yml` now pass `YTDLP_IMPERSONATE`, `PLAYWRIGHT_COOKIES_SAMESITE`, and all hanime vars (`HANIME_BYPASS_PROXY`, `HANIME_PROXY_SERVER`, `HANIME_USE_COOKIES`, `HANIME_FORCE_IPV4`). Both load `.env` via `env_file` so recreate picks up new keys. `.env.example` recommends `HANIME_BYPASS_PROXY=false` + `HANIME_USE_COOKIES=false` + `HANIME_FORCE_IPV4=true` for home-SOCKS deploys.
 

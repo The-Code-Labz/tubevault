@@ -43,6 +43,13 @@ export const config = {
   // Fail-closed: validateConfig() refuses to boot without this set.
   adminApiKey: process.env.ADMIN_API_KEY || '',
 
+  // Shared secret required in the X-Agent-Key header for the /api/agent/* surface
+  // (start/list/pull/delete downloads on behalf of a NeuroClaw-style agent, no
+  // Supabase session). Optional: unset = /api/agent is not mounted at all.
+  // Deliberately a different key than ADMIN_API_KEY (no invite/cookie-sync/yt-dlp
+  // update powers).
+  agentApiKey: process.env.AGENT_API_KEY || '',
+
   // Cloudflare R2 (S3-compatible)
   r2Endpoint: process.env.R2_ENDPOINT || '',
   r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || '',

@@ -753,7 +753,13 @@ export async function fetchMetadata(url: string, signal?: AbortSignal): Promise<
       throw new Error(`Failed to parse yt-dlp metadata: ${err instanceof Error ? err.message : 'unknown'}; stderr: ${stderr.slice(0, 500)}`)
     }
   } catch (err: any) {
-    throw new Error(annotateHanime403(err?.message || String(err)))
+    const msg = err?.message || String(err)
+    // annotateHanime403 appends hanime-specific SOCKS/IPv6/cookie troubleshooting
+    // text. isHanimeEgressError() matches on generic phrases like "Unable to
+    // download webpage" that appear in yt-dlp failures for ANY site, so without
+    // this guard every unrelated 404/network error on a non-hanime URL got the
+    // irrelevant hanime blurb appended too. Scope it to actual hanime-family URLs.
+    throw new Error(needsFfmpegHlsDownloader(url) ? annotateHanime403(msg) : msg)
   }
 }
 

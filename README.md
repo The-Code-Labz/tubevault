@@ -310,6 +310,28 @@ All routes below except `/api/health` require `Authorization: Bearer <supabase-a
 
 `POST /api/admin/invite` is a separate admin-only route, gated by the `X-Admin-Key` header instead of a Supabase session — see "Invite-only setup" below.
 
+### Agent API
+
+For a NeuroClaw-style agent (or any script) that needs to start/pull downloads without a human Supabase session. Gated by the `X-Agent-Key` header, checked against `AGENT_API_KEY` — a separate secret from `ADMIN_API_KEY`, with no invite/cookie-sync/yt-dlp-update powers. Not mounted at all unless `AGENT_API_KEY` is set. Every download created through this surface is owned by a reserved internal id, isolated from real users: an agent can never see/touch a human's videos, and vice versa.
+
+| Method | Route | Description |
+|---|---|---|
+| POST | `/api/agent/downloads` | Start a download `{ url, backend? }` — `backend` is `supabase` or `r2`, omit to use `STORAGE_BACKEND` |
+| GET | `/api/agent/downloads` | List downloads started via this API |
+| GET | `/api/agent/downloads/:id` | Get status/progress |
+| GET | `/api/agent/downloads/:id/file` | Stream the finished file as an attachment (`complete` status only) |
+| DELETE | `/api/agent/downloads/:id` | Delete a download + its storage object |
+
+```bash
+curl -X POST https://<host>/api/agent/downloads \
+  -H "X-Agent-Key: $AGENT_API_KEY" -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/video","backend":"r2"}'
+
+curl https://<host>/api/agent/downloads/<id> -H "X-Agent-Key: $AGENT_API_KEY"
+
+curl https://<host>/api/agent/downloads/<id>/file -H "X-Agent-Key: $AGENT_API_KEY" -o video.mp4
+```
+
 ## CORS / production
 
 By default the API sends no CORS headers (same-origin only). If the frontend is served from a different origin than the API, set `ALLOWED_ORIGIN` (comma-separated) and `VITE_API_BASE_URL` in the frontend build.
@@ -320,13 +342,6 @@ By default the API sends no CORS headers (same-origin only). If the frontend is 
 - Download URLs are checked against a best-effort SSRF allowlist (blocks loopback/private/link-local/cloud-metadata address ranges) before being handed to `yt-dlp`. This resolves DNS once at validation time — it reduces but does not eliminate DNS-rebinding risk, so still run this behind network egress restrictions if downloading from untrusted URLs matters to your threat model.
 - The Supabase Storage bucket is private (never `public: true`); video URLs are short-lived signed URLs minted per authenticated, ownership-checked request — never permanent/unsigned. See "Storage bucket" above for the auto-migration behavior on existing deployments.
 - Keep your service keys in `.env` only — never commit them. `SUPABASE_ANON_KEY` is the one exception meant to be public (it's the browser client key, served via `GET /api/config`).
-- Self-signup is disabled: the frontend has no sign-up form, and `/api/admin/invite` (gated by `ADMIN_API_KEY` via `X-Admin-Key`) is the only way to onboard a user, kept isolated from `/api/videos*`. This is still UX/defense-in-depth — the actual enforcement boundary is the "Allow new users to sign up" toggle in Supabase's dashboard (Authentication → Providers → Email); see "Invite-only setup" above.
-- R2 storage is unaffected by this: R2 objects are still served via a plain CDN/public-dev URL (`R2_PUBLIC_URL` or the R2 endpoint), matching how R2 buckets are normally fronted. If that's not an acceptable threat model for your R2 bucket's contents, put access control in front of it yourself (e.g. Cloudflare Access, a signed-URL Worker) or use `STORAGE_BACKEND=supabase`.
-
-## License
-
-MIT
- `GET /api/config`).
 - Self-signup is disabled: the frontend has no sign-up form, and `/api/admin/invite` (gated by `ADMIN_API_KEY` via `X-Admin-Key`) is the only way to onboard a user, kept isolated from `/api/videos*`. This is still UX/defense-in-depth — the actual enforcement boundary is the "Allow new users to sign up" toggle in Supabase's dashboard (Authentication → Providers → Email); see "Invite-only setup" above.
 - R2 storage is unaffected by this: R2 objects are still served via a plain CDN/public-dev URL (`R2_PUBLIC_URL` or the R2 endpoint), matching how R2 buckets are normally fronted. If that's not an acceptable threat model for your R2 bucket's contents, put access control in front of it yourself (e.g. Cloudflare Access, a signed-URL Worker) or use `STORAGE_BACKEND=supabase`.
 
