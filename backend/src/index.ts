@@ -17,6 +17,7 @@ import { z } from 'zod'
 import { requireAuth, type AuthedRequest } from './auth.js'
 import { adminRouter } from './admin.js'
 import { agentRouter } from './agent.js'
+import { docsRouter } from './docs.js'
 import { assertSafeDownloadUrl } from './url-safety.js'
 import type { StorageBackend } from './types.js'
 
@@ -76,6 +77,9 @@ if (config.agentApiKey) {
 } else {
   console.warn('[agent] AGENT_API_KEY not set — /api/agent/* routes are disabled')
 }
+
+// Public API reference — no auth, so agents can read it before presenting a key.
+app.use('/api/docs', docsRouter)
 
 // Every /api/videos* route requires a valid Supabase session.
 app.use('/api/videos', requireAuth)

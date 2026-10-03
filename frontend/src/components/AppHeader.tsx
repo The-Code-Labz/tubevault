@@ -1,4 +1,4 @@
-import { LogOut } from 'lucide-react'
+import { BookOpen, LogOut } from 'lucide-react'
 import { VaultMark, VaultWordmark } from './VaultMark.tsx'
 
 interface AppHeaderProps {
@@ -17,6 +17,13 @@ export function AppHeader({ email, onSignOut }: AppHeaderProps) {
           <span className="min-w-0 truncate font-mono text-xs text-paper-muted" title={email}>
             {email}
           </span>
+          <a
+            href="/docs"
+            className="flex h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-sm text-paper-muted transition hover:border-border-strong hover:text-paper focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
+          >
+            <BookOpen size={16} aria-hidden="true" />
+            <span className="hidden sm:inline">API Docs</span>
+          </a>
           <button
             type="button"
             onClick={onSignOut}
