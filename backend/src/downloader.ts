@@ -1434,6 +1434,32 @@ export async function getVideoForDownload(
   return { streamUrl, filename, contentType: 'video/mp4' }
 }
 
+/**
+ * On boot, `activeJobs`/`activeCount`/`waitQueue` always start empty — but videos.json
+ * can still have rows frozen at 'downloading' or 'queued' from before the process died
+ * (container restart/redeploy kills the yt-dlp child mid-flight; nothing ever reconciled
+ * the DB on the way down). Previously those rows were permanently stuck: retryDownload()
+ * only accepts status 'failed', and nothing re-dequeues a pre-existing 'queued' row.
+ * Re-queue them here so a restart self-heals instead of needing a manual DB edit.
+ */
+export async function recoverStaleJobs(): Promise<void> {
+  const videos = await db.list()
+  const stale = videos.filter((v) => v.status === 'downloading' || v.status === 'queued')
+  if (stale.length === 0) return
+
+  console.warn(
+    `[downloader] recovering ${stale.length} job(s) orphaned by a previous restart ` +
+      `(status downloading/queued with no active process) — re-queuing`
+  )
+
+  for (const video of stale) {
+    await db.update(video.id, { status: 'queued', progress: 0, error: null })
+    const controller = new AbortController()
+    activeJobs.set(video.id, { controller })
+    scheduleDownload(video.id, video.url, video.storageBackend, controller)
+  }
+}
+
 /** Best-effort abort of every in-flight download; used on graceful shutdown. */
 export function shutdownActiveJobs(): void {
   for (const [id, job] of activeJobs) {

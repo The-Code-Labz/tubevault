@@ -11,6 +11,7 @@ import {
   retryDownload,
   getYtDlpVersion,
   updateYtDlp,
+  recoverStaleJobs,
   shutdownActiveJobs,
 } from './downloader.js'
 import { z } from 'zod'
@@ -229,6 +230,12 @@ async function main() {
   }
 
   await runYtDlpUpdate()
+
+  try {
+    await recoverStaleJobs()
+  } catch (err: any) {
+    console.error(`Failed to recover stale jobs: ${err.message}`)
+  }
 
   const server = app.listen(config.port, () => {
     console.log(`TubeVault API running on http://localhost:${config.port}`)
